@@ -1,0 +1,33 @@
+{
+    "name": "push-to-chrome-extension",
+    "$schema": "../../node_modules/nx/schemas/project-schema.json",
+    "sourceRoot": "packages/chrome-extension/src",
+    "projectType": "library",
+    "targets": {
+      "build": {
+        "executor": "@nx/js:tsc",
+        "outputs": ["{options.outputPath}"],
+        "options": {
+          "outputPath": "dist/packages/chrome-extension",
+          "main": "packages/chrome-extension/src/index.ts",
+          "tsConfig": "packages/chrome-extension/tsconfig.json",
+          "assets": ["packages/chrome-extension/*.md"]
+        }
+      },
+      "lint": {
+        "executor": "@nrwl/linter:eslint",
+        "outputs": ["{options.outputFile}"],
+        "options": {
+          "lintFilePatterns": ["packages/chrome-extension/**/*.ts"]
+        }
+      },
+      "test": {
+        "executor": "@nrwl/jest:jest",
+        "outputs": ["{workspaceRoot}/coverage/{projectRoot}"],
+        "options": {
+          "jestConfig": "packages/pushto-chrome-extension/jest.config.ts"
+        }
+      }
+    },
+    "tags": []
+  }

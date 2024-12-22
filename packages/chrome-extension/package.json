@@ -1,0 +1,33 @@
+{
+  "name": "@push-to/chrome-extension",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist .turbo node_modules"
+  },
+  "dependencies": {
+    "@types/chrome": "^0.0.260",
+    "@types/node": "^22.10.2"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.7",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0"
+  }
+}

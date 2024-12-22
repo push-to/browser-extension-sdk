@@ -1,90 +1,127 @@
-# PushToBrowserExtension
+# Push To Chrome Extension
 
-<a alt="Nx logo" href="https://nx.dev" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/nrwl/nx/master/images/nx-logo.png" width="45"></a>
+<div align="center"><strong>Push To Chrome Extension</strong></div>
+<div align="center">A modern way to handle push notifications in Chrome Extensions.<br />Simple, type-safe, and easy to integrate.</div>
+<br />
 
-✨ Your new, shiny [Nx workspace](https://nx.dev) is almost ready ✨.
+## Introduction
 
-[Learn more about this workspace setup and its capabilities](https://nx.dev/nx-api/js?utm_source=nx_project&amp;utm_medium=readme&amp;utm_campaign=nx_projects) or run `npx nx graph` to visually explore what was created. Now, let's get you up to speed!
+A TypeScript library for handling push notifications in Chrome Extensions with ease. It takes care of service worker registration, push subscription management, and provides a clean API for handling notifications.
 
-## Finish your CI setup
+## Features
 
-[Click here to finish setting up your workspace!](https://cloud.nx.app/connect/L3hLKrHGAT)
+- 🔒 Secure handling of VAPID keys
+- 🔄 Automatic service worker registration
+- 📝 TypeScript support out of the box
+- 🔑 Anonymous user identification
+- 💪 Promise-based API
+- 🌐 Cross-origin support
 
+## Install
 
-## Generate a library
-
-```sh
-npx nx g @nx/js:lib packages/pkg1 --publishable --importPath=@my-org/pkg1
-```
-
-## Run tasks
-
-To build the library use:
-
-```sh
-npx nx build pkg1
-```
-
-To run any task with Nx use:
+Install the package from your command line:
 
 ```sh
-npx nx <target> <project-name>
+# With npm
+npm install @push-to/chrome-extension
+
+# With pnpm
+pnpm add @push-to/chrome-extension
+
+# With yarn
+yarn add @push-to/chrome-extension
 ```
 
-These targets are either [inferred automatically](https://nx.dev/concepts/inferred-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects) or defined in the `project.json` or `package.json` files.
+## Getting Started
 
-[More about running tasks in the docs &raquo;](https://nx.dev/features/run-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+1. Initialize the Push To extension in your Chrome Extension:
 
-## Versioning and releasing
+```typescript
+import { PushToExtension } from '@push-to/chrome-extension';
 
-To version and release the library use
-
-```
-npx nx release
-```
-
-Pass `--dry-run` to see what would happen without actually releasing the library.
-
-[Learn more about Nx release &raquo;](hhttps://nx.dev/features/manage-releases?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-## Keep TypeScript project references up to date
-
-Nx automatically updates TypeScript [project references](https://www.typescriptlang.org/docs/handbook/project-references.html) in `tsconfig.json` files to ensure they remain accurate based on your project dependencies (`import` or `require` statements). This sync is automatically done when running tasks such as `build` or `typecheck`, which require updated references to function correctly.
-
-To manually trigger the process to sync the project graph dependencies information to the TypeScript project references, run the following command:
-
-```sh
-npx nx sync
+const pushTo = new PushToExtension({
+  apiKey: 'your-api-key'
+});
 ```
 
-You can enforce that the TypeScript project references are always in the correct state when running in CI by adding a step to your CI job configuration that runs the following command:
+2. Register for push notifications:
 
-```sh
-npx nx sync:check
+```typescript
+// In your popup or background script
+document.getElementById('subscribe-button').addEventListener('click', async () => {
+  try {
+    await pushTo.registerPushSubscription();
+    console.log('Successfully subscribed to push notifications!');
+  } catch (error) {
+    console.error('Failed to subscribe:', error);
+  }
+});
 ```
 
-[Learn more about nx sync](https://nx.dev/reference/nx-commands#sync)
+3. Handle incoming notifications in your background script:
 
+```typescript
+// background.js
+self.addEventListener('push', (event) => {
+  const data = event.data?.json() ?? {};
+  
+  self.registration.showNotification(data.title ?? 'New Notification', {
+    body: data.body ?? 'You have a new message',
+    icon: data.icon,
+    data: data
+  });
+});
+```
 
-[Learn more about Nx on CI](https://nx.dev/ci/intro/ci-with-nx#ready-get-started-with-your-provider?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+## API Reference
 
-## Install Nx Console
+### PushToExtension
 
-Nx Console is an editor extension that enriches your developer experience. It lets you run tasks, generate code, and improves code autocompletion in your IDE. It is available for VSCode and IntelliJ.
+#### Constructor Options
 
-[Install Nx Console &raquo;](https://nx.dev/getting-started/editor-setup?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+```typescript
+interface PushSubscriptionOptions {
+  apiKey: string;               // Required: Your Push To API key
+}
+```
 
-## Useful links
+#### Methods
 
-Learn more:
+- `registerPushSubscription(localRegistration?: ServiceWorkerRegistration): Promise<void>`
+  - Registers the service worker and sets up push notifications
 
-- [Learn more about this workspace setup](https://nx.dev/nx-api/js?utm_source=nx_project&amp;utm_medium=readme&amp;utm_campaign=nx_projects)
-- [Learn about Nx on CI](https://nx.dev/ci/intro/ci-with-nx?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Releasing Packages with Nx release](https://nx.dev/features/manage-releases?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [What are Nx plugins?](https://nx.dev/concepts/nx-plugins?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+## Browser Support
 
-And join the Nx community:
-- [Discord](https://go.nx.dev/community)
-- [Follow us on X](https://twitter.com/nxdevtools) or [LinkedIn](https://www.linkedin.com/company/nrwl)
-- [Our Youtube channel](https://www.youtube.com/@nxdevtools)
-- [Our blog](https://nx.dev/blog?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+| <img src="https://raw.githubusercontent.com/alrra/browser-logos/main/src/chrome/chrome.svg" width="48px" height="48px" alt="Chrome logo"> | 
+|:---:|
+| Chrome ✔ |
+
+## Development
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/push-to-chrome-extension.git
+```
+
+2. Install dependencies:
+```bash
+pnpm install
+```
+
+3. Build the package:
+```bash
+pnpm build
+```
+
+4. For local testing:
+```bash
+pnpm dev
+```
+
+## Contributing
+
+Contributions are welcome! Please read our contributing guidelines before submitting a pull request.
+
+## License
+
+MIT License

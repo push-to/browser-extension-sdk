@@ -1,0 +1,35 @@
+name: Publish Package to NPM
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build --filter=@push-to/chrome-extension
+        env:
+          PUSHTO_CORE_URL: ${{ secrets.PUSHTO_CORE_URL }}
+          PUSHTO_AUTH_TOKEN: ${{ secrets.PUSHTO_AUTH_TOKEN }}
+
+      - name: Publish to NPM
+        run: pnpm publish --filter=@push-to/chrome-extension --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
