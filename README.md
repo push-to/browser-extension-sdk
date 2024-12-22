@@ -10,8 +10,8 @@ A TypeScript library for handling push notifications in Chrome Extensions with e
 
 ## Features
 
-- 🔒 Secure handling of VAPID keys
-- 🔄 Automatic service worker registration
+- 🔄 Automatic service worker registration and push subscription management
+- 🚚 Handle push notifications in the background script
 - 📝 TypeScript support out of the box
 - 🔑 Anonymous user identification
 - 💪 Promise-based API
@@ -34,43 +34,26 @@ yarn add @push-to/chrome-extension
 
 ## Getting Started
 
-1. Initialize the Push To extension in your Chrome Extension:
+1. In your background script, initialize the Push To extension:
 
 ```typescript
+// background.js
+
 import { PushToExtension } from '@push-to/chrome-extension';
 
 const pushTo = new PushToExtension({
-  apiKey: 'your-api-key'
+  apiKey: 'your-api-key',
+  // Optional: Default notification options
+  defaultNotificationIcon: 'https://example.com/icon.png'
 });
 ```
 
 2. Register for push notifications:
 
 ```typescript
-// In your popup or background script
-document.getElementById('subscribe-button').addEventListener('click', async () => {
-  try {
-    await pushTo.registerPushSubscription();
-    console.log('Successfully subscribed to push notifications!');
-  } catch (error) {
-    console.error('Failed to subscribe:', error);
-  }
-});
-```
-
-3. Handle incoming notifications in your background script:
-
-```typescript
 // background.js
-self.addEventListener('push', (event) => {
-  const data = event.data?.json() ?? {};
-  
-  self.registration.showNotification(data.title ?? 'New Notification', {
-    body: data.body ?? 'You have a new message',
-    icon: data.icon,
-    data: data
-  });
-});
+
+await pushTo.registerPushSubscription();
 ```
 
 ## API Reference
@@ -81,7 +64,8 @@ self.addEventListener('push', (event) => {
 
 ```typescript
 interface PushSubscriptionOptions {
-  apiKey: string;               // Required: Your Push To API key
+  apiKey: string; // Required: Your Push To API key
+  defaultNotificationIcon?: string;
 }
 ```
 

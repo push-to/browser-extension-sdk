@@ -2,7 +2,7 @@
 /// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
 
-import { PushSubscriptionOptions } from './types';
+import { PushNotificationData, PushSubscriptionOptions } from './types';
 import { CORE_URL, AUTH_TOKEN } from './constants';
 
 export class PushNotifications {
@@ -10,9 +10,13 @@ export class PushNotifications {
   private vapidKeysUrl: string = CORE_URL + '/vapid-keys';
   private apiKey: string;
   private authToken: string = AUTH_TOKEN;
+  private defaultNotificationIcon?: string;
 
   constructor(options: PushSubscriptionOptions) {
     this.apiKey = options.apiKey;
+    this.defaultNotificationIcon = options.defaultNotificationIcon;
+
+    this.listenForPushNotifications();
   }
 
   // Your existing functions refactored into class methods
@@ -99,5 +103,45 @@ export class PushNotifications {
     }
     console.info(`pt_anonymousId returned: ${pt_anonymousId}`);
     return pt_anonymousId;
+  }
+
+  private listenForPushNotifications() {
+    self.addEventListener('push', (event) => {
+      if (event.data === null) {
+        return;
+      }
+
+      const data = event.data.json() as PushNotificationData;
+
+      this.showNotification(data);
+    });
+  }
+
+  private async showNotification(data: PushNotificationData) {
+    const title = data.title;
+    const body = data.body;
+    const icon = this.defaultNotificationIcon ?? data.icon;
+
+    const options: chrome.notifications.NotificationOptions<true> = {
+      priority: 1,
+      type: 'basic',
+      isClickable: true,
+      title,
+      message: body,
+      iconUrl: icon,
+    };
+
+    chrome.notifications.create(
+      'push-to-chrome-extension',
+      options,
+      (notificationId) => {
+        console.info(`Notification created with id: ${notificationId}`);
+      }
+    );
+
+    if (data.badge) {
+      chrome.action.setBadgeText({ text: data.badge.text });
+      chrome.action.setBadgeBackgroundColor({ color: data.badge.color });
+    }
   }
 }
