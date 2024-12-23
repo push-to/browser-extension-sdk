@@ -24,7 +24,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: pnpm build --filter=@push-to/chrome-extension
+        run: pnpm exec nx run push-to-chrome-extension:build
         env:
           PUSHTO_CORE_URL: ${{ secrets.PUSHTO_CORE_URL }}
           PUSHTO_AUTH_TOKEN: ${{ secrets.PUSHTO_AUTH_TOKEN }}
