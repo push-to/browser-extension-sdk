@@ -1,17 +1,21 @@
 {
-    "name": "push-to-chrome-extension",
+    "name": "@push-to/chrome-extension",
     "$schema": "../../node_modules/nx/schemas/project-schema.json",
     "sourceRoot": "packages/chrome-extension/src",
     "projectType": "library",
     "targets": {
       "build": {
-        "executor": "@nx/js:tsc",
-        "outputs": ["{options.outputPath}"],
+        "executor": "nx:run-commands",
         "options": {
-          "outputPath": "dist/packages/chrome-extension",
-          "main": "packages/chrome-extension/src/index.ts",
-          "tsConfig": "packages/chrome-extension/tsconfig.json",
-          "assets": ["packages/chrome-extension/*.md"]
+          "command": "tsup",
+          "cwd": "packages/chrome-extension"
+        }
+      },
+      "dev": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "tsup --watch",
+          "cwd": "packages/chrome-extension"
         }
       }
     },

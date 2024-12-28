@@ -3,14 +3,22 @@ export interface PushSubscriptionOptions {
   defaultNotificationIcon?: string;
 }
 
-interface PushNotificationBadge {
-  text: string;
-  color: string;
-}
+// interface PushNotificationBadge {
+//   text: string;
+//   color: string;
+// }
 
 export interface PushNotificationData {
   title: string;
-  body: string;
-  icon: string;
-  badge?: PushNotificationBadge;
+  options: {
+    body: string;
+    icon: string;
+    data: {
+      autoDismissOptions: {
+        behavior: string;
+        dismissTimeMS: number;
+      };
+      correlationId: string;
+    };
+  };
 }

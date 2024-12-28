@@ -1,6 +1,7 @@
 /// <reference types="chrome"/>
 /// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
+
 import { CORE_URL, AUTH_TOKEN } from './constants';
 
 export class RegisterSubscription {

@@ -5,7 +5,7 @@ declare let self: ServiceWorkerGlobalScope;
 import { PushNotificationData, PushSubscriptionOptions } from './types';
 
 export class ReceiveNotification {
-  private static receiveNotificationInstance: ReceiveNotification;
+  private static instance: ReceiveNotification;
   private defaultNotificationIcon?: string;
 
   private constructor(options: PushSubscriptionOptions) {
@@ -14,27 +14,29 @@ export class ReceiveNotification {
 
   public static initialize(options: PushSubscriptionOptions) {
     if (
-      !this.receiveNotificationInstance ||
-      this.receiveNotificationInstance.defaultNotificationIcon !==
-        options.defaultNotificationIcon
+      !this.instance ||
+      this.instance.defaultNotificationIcon !== options.defaultNotificationIcon
     ) {
-      if (this.receiveNotificationInstance) {
-        this.receiveNotificationInstance.removeListener();
+      if (this.instance) {
+        this.instance.removeListener();
       }
 
-      this.receiveNotificationInstance = new ReceiveNotification(options);
+      this.instance = new ReceiveNotification(options);
 
-      this.receiveNotificationInstance.listenForPushNotifications();
+      this.instance.listenForPushNotifications();
     }
-    return this.receiveNotificationInstance;
+    return this.instance;
   }
 
   private handlePushNotification(event: PushEvent) {
+    console.log('handlePushNotification');
     if (event.data === null) {
       return;
     }
 
     const data = event.data.json() as PushNotificationData;
+
+    console.log('data', data);
 
     this.showNotification(data);
   }
@@ -44,13 +46,14 @@ export class ReceiveNotification {
   }
 
   private listenForPushNotifications() {
-    self.addEventListener('push', this.handlePushNotification);
+    console.log('listenForPushNotifications');
+    self.addEventListener('push', this.handlePushNotification.bind(this));
   }
 
   private async showNotification(data: PushNotificationData) {
     const title = data.title;
-    const body = data.body;
-    const icon = this.defaultNotificationIcon ?? data.icon;
+    const body = data.options.body;
+    const icon = this.defaultNotificationIcon ?? data.options.icon;
 
     const options: chrome.notifications.NotificationOptions<true> = {
       priority: 1,
@@ -61,17 +64,19 @@ export class ReceiveNotification {
       iconUrl: icon,
     };
 
+    console.log('options', options);
+
     chrome.notifications.create(
-      'push-to-chrome-extension',
+      data.options.data.correlationId,
       options,
       (notificationId) => {
         console.info(`Notification created with id: ${notificationId}`);
       }
     );
 
-    if (data.badge) {
-      chrome.action.setBadgeText({ text: data.badge.text });
-      chrome.action.setBadgeBackgroundColor({ color: data.badge.color });
-    }
+    // if (data.badge) {
+    //   chrome.action.setBadgeText({ text: data.badge.text });
+    //   chrome.action.setBadgeBackgroundColor({ color: data.badge.color });
+    // }
   }
 }
