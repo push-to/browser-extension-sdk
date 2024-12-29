@@ -3,6 +3,7 @@
 declare let self: ServiceWorkerGlobalScope;
 
 import { AUTH_TOKEN, CORE_URL } from './constants';
+import { PushNotificationStatus } from './types';
 
 export class PushNotificationEvents {
   private static pushNotificationEvents: PushNotificationEvents;
@@ -22,15 +23,24 @@ export class PushNotificationEvents {
   }
 
   public handleDisplayed(notificationId: string) {
-    this.sendTrackNotificationEvent(notificationId, 'displayed');
+    this.sendTrackNotificationEvent(
+      notificationId,
+      PushNotificationStatus.DELIVERED
+    );
   }
 
   private handleNotificationClick(notificationId: string) {
-    this.sendTrackNotificationEvent(notificationId, 'clicked');
+    this.sendTrackNotificationEvent(
+      notificationId,
+      PushNotificationStatus.CLICKED
+    );
   }
 
   private handleNotificationClose(notificationId: string, _byUser: boolean) {
-    this.sendTrackNotificationEvent(notificationId, 'closed');
+    this.sendTrackNotificationEvent(
+      notificationId,
+      PushNotificationStatus.DISMISSED
+    );
   }
 
   private listenForPushNotificationEvents() {
@@ -45,7 +55,7 @@ export class PushNotificationEvents {
 
   private async sendTrackNotificationEvent(
     notificationId: string,
-    status: 'clicked' | 'displayed' | 'closed'
+    status: PushNotificationStatus
   ) {
     await fetch(this.trackNotificationUrl, {
       method: 'POST',

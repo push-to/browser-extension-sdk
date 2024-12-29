@@ -3,10 +3,10 @@ export interface PushSubscriptionOptions {
   defaultNotificationIcon?: string;
 }
 
-// interface PushNotificationBadge {
-//   text: string;
-//   color: string;
-// }
+interface PushNotificationBadge {
+  text: string;
+  color: string;
+}
 
 export interface PushNotificationData {
   title: string;
@@ -19,6 +19,13 @@ export interface PushNotificationData {
         dismissTimeMS: number;
       };
       correlationId: string;
+      badge?: PushNotificationBadge;
     };
   };
+}
+
+export enum PushNotificationStatus {
+  CLICKED = 'clicked',
+  DELIVERED = 'delivered',
+  DISMISSED = 'dismissed',
 }

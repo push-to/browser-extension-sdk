@@ -82,9 +82,11 @@ export class ReceiveNotification {
       data.options.data.correlationId
     );
 
-    // if (data.badge) {
-    //   chrome.action.setBadgeText({ text: data.badge.text });
-    //   chrome.action.setBadgeBackgroundColor({ color: data.badge.color });
-    // }
+    if (data.options.data.badge) {
+      chrome.action.setBadgeText({ text: data.options.data.badge.text });
+      chrome.action.setBadgeBackgroundColor({
+        color: data.options.data.badge.color,
+      });
+    }
   }
 }
