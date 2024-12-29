@@ -2,17 +2,21 @@
 /// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
 
+import { PushNotificationEvents } from './push-notification-events';
 import { PushNotificationData, PushSubscriptionOptions } from './types';
 
 export class ReceiveNotification {
   private static instance: ReceiveNotification;
   private defaultNotificationIcon?: string;
 
-  private constructor(options: PushSubscriptionOptions) {
+  private constructor(
+    private readonly apiKey: string,
+    options: PushSubscriptionOptions
+  ) {
     this.defaultNotificationIcon = options.defaultNotificationIcon;
   }
 
-  public static initialize(options: PushSubscriptionOptions) {
+  public static initialize(apiKey: string, options: PushSubscriptionOptions) {
     if (
       !this.instance ||
       this.instance.defaultNotificationIcon !== options.defaultNotificationIcon
@@ -21,7 +25,7 @@ export class ReceiveNotification {
         this.instance.removeListener();
       }
 
-      this.instance = new ReceiveNotification(options);
+      this.instance = new ReceiveNotification(apiKey, options);
 
       this.instance.listenForPushNotifications();
     }
@@ -72,6 +76,10 @@ export class ReceiveNotification {
       (notificationId) => {
         console.info(`Notification created with id: ${notificationId}`);
       }
+    );
+
+    PushNotificationEvents.getInstance(this.apiKey).handleDisplayed(
+      data.options.data.correlationId
     );
 
     // if (data.badge) {
