@@ -2,13 +2,12 @@
 /// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
 
-import { AUTH_TOKEN, CORE_URL } from './constants';
+import { CORE_URL } from './constants';
 import { PushNotificationStatus } from './types';
 
 export class PushNotificationEvents {
   private static pushNotificationEvents: PushNotificationEvents;
   private trackNotificationUrl: string = CORE_URL + '/track-notification';
-  private authToken: string = AUTH_TOKEN;
 
   constructor(private readonly apiKey: string) {}
 
@@ -62,8 +61,7 @@ export class PushNotificationEvents {
       body: JSON.stringify({ correlationId: notificationId, status }),
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.authToken}`,
-        'x-pushto-api-key': this.apiKey,
+        Authorization: `Bearer ${this.apiKey}`,
       },
     });
   }

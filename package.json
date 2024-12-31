@@ -2,7 +2,10 @@
   "name": "@push-to-browser-extension/source",
   "version": "0.0.0",
   "license": "MIT",
-  "scripts": {},
+  "scripts": {
+    "dev": "nx run-many -t dev",
+    "build": "nx run-many -t build"
+  },
   "private": true,
   "devDependencies": {
     "@nx/js": "20.3.0",

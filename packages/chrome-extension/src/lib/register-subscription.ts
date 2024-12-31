@@ -2,11 +2,10 @@
 /// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
 
-import { CORE_URL, AUTH_TOKEN } from './constants';
+import { CORE_URL } from './constants';
 
 export class RegisterSubscription {
   private registerUrl: string = CORE_URL + '/register-subscription';
-  private authToken: string = AUTH_TOKEN;
   private vapidKeysUrl: string = CORE_URL + '/vapid-keys';
 
   constructor(private readonly apiKey: string) {}
@@ -32,8 +31,7 @@ export class RegisterSubscription {
       }),
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.authToken}`,
-        'x-pushto-api-key': this.apiKey,
+        Authorization: `Bearer ${this.apiKey}`,
       },
     });
     console.log('Push Sent!');
@@ -43,8 +41,7 @@ export class RegisterSubscription {
     const response = await fetch(this.vapidKeysUrl, {
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.authToken}`,
-        'x-pushto-api-key': this.apiKey,
+        Authorization: `Bearer ${this.apiKey}`,
       },
     });
     const data = await response.json();

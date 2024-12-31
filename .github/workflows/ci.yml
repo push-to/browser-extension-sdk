@@ -43,4 +43,3 @@ jobs:
       - run: pnpm exec nx affected -t lint test build
         env:
             PUSHTO_CORE_URL: ${{ secrets.PUSHTO_CORE_URL }}
-            PUSHTO_AUTH_TOKEN: ${{ secrets.PUSHTO_AUTH_TOKEN }}

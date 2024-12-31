@@ -36,7 +36,6 @@ jobs:
         run: pnpm exec nx build @push-to/chrome-extension
         env:
           PUSHTO_CORE_URL: ${{ secrets.PUSHTO_CORE_URL }}
-          PUSHTO_AUTH_TOKEN: ${{ secrets.PUSHTO_AUTH_TOKEN }}
 
       - name: Publish to NPM
         run: pnpm publish --filter=@push-to/chrome-extension --no-git-checks --access public

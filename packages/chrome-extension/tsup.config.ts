@@ -16,7 +16,6 @@ export default defineConfig({
   clean: true,
   env: {
     PUSHTO_CORE_URL: process.env.PUSHTO_CORE_URL!,
-    PUSHTO_AUTH_TOKEN: process.env.PUSHTO_AUTH_TOKEN!,
   },
   sourcemap: true,
   target: 'es2020',
