@@ -62,7 +62,7 @@ export class PushNotificationEvents {
       body: JSON.stringify({ correlationId: notificationId, status }),
       headers: {
         'Content-Type': 'application/json',
-        Authorization: this.authToken,
+        Authorization: `Bearer ${this.authToken}`,
         'x-pushto-api-key': this.apiKey,
       },
     });
