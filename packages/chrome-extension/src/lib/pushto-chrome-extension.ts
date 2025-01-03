@@ -13,11 +13,9 @@ export class PushNotifications {
     this.apiKey = options.apiKey;
 
     ReceiveNotification.initialize(this.apiKey, options);
-    console.log('PushNotifications initialized');
   }
 
   public async registerPushSubscription() {
-    console.log('registerPushSubscription');
     const registerSubscription = new RegisterSubscription(this.apiKey);
     await registerSubscription.registerPushSubscription();
   }

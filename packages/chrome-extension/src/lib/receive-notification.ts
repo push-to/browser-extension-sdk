@@ -33,14 +33,11 @@ export class ReceiveNotification {
   }
 
   private handlePushNotification(event: PushEvent) {
-    console.log('handlePushNotification');
     if (event.data === null) {
       return;
     }
 
     const data = event.data.json() as PushNotificationData;
-
-    console.log('data', data);
 
     this.showNotification(data);
   }
@@ -50,7 +47,6 @@ export class ReceiveNotification {
   }
 
   private listenForPushNotifications() {
-    console.log('listenForPushNotifications');
     self.addEventListener('push', this.handlePushNotification.bind(this));
   }
 
@@ -68,15 +64,7 @@ export class ReceiveNotification {
       iconUrl: icon,
     };
 
-    console.log('options', options);
-
-    chrome.notifications.create(
-      data.options.data.correlationId,
-      options,
-      (notificationId) => {
-        console.info(`Notification created with id: ${notificationId}`);
-      }
-    );
+    chrome.notifications.create(data.options.data.correlationId, options);
 
     PushNotificationEvents.getInstance(this.apiKey).handleDisplayed(
       data.options.data.correlationId

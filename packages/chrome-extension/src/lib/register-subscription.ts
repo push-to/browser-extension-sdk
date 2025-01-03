@@ -21,7 +21,6 @@ export class RegisterSubscription {
     const subscription = await this.subscribePush(registration);
     const anonymousId = await this.getOrCreateUserAnonymousId();
 
-    console.info(`Sending push subscription to ${this.registerUrl}`);
     await fetch(this.registerUrl, {
       method: 'POST',
       body: JSON.stringify({
@@ -34,7 +33,6 @@ export class RegisterSubscription {
         Authorization: `Bearer ${this.apiKey}`,
       },
     });
-    console.log('Push Sent!');
   }
 
   private async subscribePush(registration: ServiceWorkerRegistration) {
@@ -45,7 +43,6 @@ export class RegisterSubscription {
       },
     });
     const data = await response.json();
-    console.log({ data });
 
     const publicVapidKey = data.publicVapidKey;
 
@@ -53,12 +50,10 @@ export class RegisterSubscription {
       throw new Error('PUBLIC_VAPID_KEY is not set');
     }
 
-    console.log('Registering Push...');
     const subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: this.urlBase64ToUint8Array(publicVapidKey),
     });
-    console.log('Push Registered!');
 
     return subscription;
   }
@@ -69,13 +64,11 @@ export class RegisterSubscription {
     )) as {
       pt_anonymousId: string;
     };
-    console.info(`pt_anonymousId before: ${pt_anonymousId}`);
+
     if (pt_anonymousId === undefined) {
       pt_anonymousId = self.crypto.randomUUID();
-      console.info(`pt_anonymousId after: ${pt_anonymousId}`);
       chrome.storage.local.set({ pt_anonymousId });
     }
-    console.info(`pt_anonymousId returned: ${pt_anonymousId}`);
     return pt_anonymousId;
   }
 
