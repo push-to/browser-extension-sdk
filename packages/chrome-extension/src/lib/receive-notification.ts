@@ -2,6 +2,7 @@
 /// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
 
+import { Dismiss } from './dismiss';
 import { PushNotificationEvents } from './push-notification-events';
 import { PushNotificationData, PushSubscriptionOptions } from './types';
 
@@ -37,9 +38,7 @@ export class ReceiveNotification {
       return;
     }
 
-    const data = event.data.json() as PushNotificationData;
-
-    this.showNotification(data);
+    event.waitUntil(this.showNotification(event.data.json()));
   }
 
   private removeListener() {
@@ -64,11 +63,23 @@ export class ReceiveNotification {
       iconUrl: icon,
     };
 
+    if (data.options.data?.autoDismissOptions?.behavior === 'device_default') {
+      options.requireInteraction = true;
+    }
+
     chrome.notifications.create(data.options.data.correlationId, options);
 
     PushNotificationEvents.getInstance(this.apiKey).handleDisplayed(
       data.options.data.correlationId
     );
+
+    if (data.options?.data?.autoDismissOptions?.behavior === 'timed') {
+      Dismiss.instance.handleTimedAutoDismiss(
+        this.apiKey,
+        data.options.data.correlationId,
+        data.options.data.autoDismissOptions
+      );
+    }
 
     if (data.options.data.badge) {
       chrome.action.setBadgeText({ text: data.options.data.badge.text });

@@ -8,24 +8,29 @@ interface PushNotificationBadge {
   color: string;
 }
 
+export interface AutoDismissOptions {
+  behavior: string;
+  dismissTimeMS: number;
+}
+
+export interface PushNotificationOptions {
+  body: string;
+  icon: string;
+  data: {
+    autoDismissOptions: AutoDismissOptions;
+    correlationId: string;
+    badge?: PushNotificationBadge;
+  };
+}
+
 export interface PushNotificationData {
   title: string;
-  options: {
-    body: string;
-    icon: string;
-    data: {
-      autoDismissOptions: {
-        behavior: string;
-        dismissTimeMS: number;
-      };
-      correlationId: string;
-      badge?: PushNotificationBadge;
-    };
-  };
+  options: PushNotificationOptions;
 }
 
 export enum PushNotificationStatus {
   CLICKED = 'clicked',
   DELIVERED = 'delivered',
-  DISMISSED = 'dismissed',
+  CLOSED = 'closed',
+  AUTO_DISMISSED = 'auto-dismissed',
 }

@@ -28,6 +28,13 @@ export class PushNotificationEvents {
     );
   }
 
+  public handleAutoDismissed(notificationId: string) {
+    this.sendTrackNotificationEvent(
+      notificationId,
+      PushNotificationStatus.AUTO_DISMISSED
+    );
+  }
+
   private handleNotificationClick(notificationId: string) {
     this.sendTrackNotificationEvent(
       notificationId,
@@ -38,7 +45,7 @@ export class PushNotificationEvents {
   private handleNotificationClose(notificationId: string, _byUser: boolean) {
     this.sendTrackNotificationEvent(
       notificationId,
-      PushNotificationStatus.DISMISSED
+      PushNotificationStatus.CLOSED
     );
   }
 

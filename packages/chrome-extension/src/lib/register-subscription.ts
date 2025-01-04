@@ -3,6 +3,7 @@
 declare let self: ServiceWorkerGlobalScope;
 
 import { CORE_URL } from './constants';
+import { PushNotificationStorage } from './push-notification-storage';
 
 export class RegisterSubscription {
   private registerUrl: string = CORE_URL + '/register-subscription';
@@ -19,7 +20,7 @@ export class RegisterSubscription {
 
     const registration = localRegistration;
     const subscription = await this.subscribePush(registration);
-    const anonymousId = await this.getOrCreateUserAnonymousId();
+    const anonymousId = await PushNotificationStorage.getAnonymousId();
 
     await fetch(this.registerUrl, {
       method: 'POST',
@@ -56,20 +57,6 @@ export class RegisterSubscription {
     });
 
     return subscription;
-  }
-
-  private async getOrCreateUserAnonymousId() {
-    let { pt_anonymousId } = (await chrome.storage.local.get(
-      'pt_anonymousId'
-    )) as {
-      pt_anonymousId: string;
-    };
-
-    if (pt_anonymousId === undefined) {
-      pt_anonymousId = self.crypto.randomUUID();
-      chrome.storage.local.set({ pt_anonymousId });
-    }
-    return pt_anonymousId;
   }
 
   private urlBase64ToUint8Array(b64: string) {
