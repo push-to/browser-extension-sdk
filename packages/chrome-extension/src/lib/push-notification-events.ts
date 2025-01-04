@@ -3,6 +3,7 @@
 declare let self: ServiceWorkerGlobalScope;
 
 import { CORE_URL } from './constants';
+import { NotificationsState } from './notifications-state';
 import { PushNotificationStatus } from './types';
 
 export class PushNotificationEvents {
@@ -40,6 +41,19 @@ export class PushNotificationEvents {
       notificationId,
       PushNotificationStatus.CLICKED
     );
+
+    chrome.notifications.clear(notificationId);
+
+    const notification =
+      NotificationsState.instance.getNotification(notificationId);
+
+    if (notification?.options?.data?.link) {
+      chrome.tabs.create({ url: notification.options.data.link });
+    }
+
+    if (notification?.options?.data?.badge) {
+      chrome.action.setBadgeText({ text: '' });
+    }
   }
 
   private handleNotificationClose(notificationId: string, _byUser: boolean) {

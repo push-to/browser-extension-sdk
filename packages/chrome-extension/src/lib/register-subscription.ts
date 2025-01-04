@@ -11,7 +11,7 @@ export class RegisterSubscription {
 
   constructor(private readonly apiKey: string) {}
 
-  public async registerPushSubscription() {
+  public async registerPushSubscription(currentUrl: string) {
     if (this.registerUrl === undefined) {
       throw new Error('registerUrl is not set');
     }
@@ -28,6 +28,9 @@ export class RegisterSubscription {
         anonymousId,
         browserLanguage: navigator.language,
         subscription,
+        context: {
+          url: currentUrl,
+        },
       }),
       headers: {
         'Content-Type': 'application/json',

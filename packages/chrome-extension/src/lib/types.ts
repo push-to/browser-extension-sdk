@@ -20,6 +20,7 @@ export interface PushNotificationOptions {
     autoDismissOptions: AutoDismissOptions;
     correlationId: string;
     badge?: PushNotificationBadge;
+    link?: string;
   };
 }
 

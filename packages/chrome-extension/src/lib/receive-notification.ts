@@ -3,6 +3,7 @@
 declare let self: ServiceWorkerGlobalScope;
 
 import { Dismiss } from './dismiss';
+import { NotificationsState } from './notifications-state';
 import { PushNotificationEvents } from './push-notification-events';
 import { PushNotificationData, PushSubscriptionOptions } from './types';
 
@@ -68,6 +69,11 @@ export class ReceiveNotification {
     }
 
     chrome.notifications.create(data.options.data.correlationId, options);
+
+    NotificationsState.instance.addNotification(
+      data.options.data.correlationId,
+      data
+    );
 
     PushNotificationEvents.getInstance(this.apiKey).handleDisplayed(
       data.options.data.correlationId

@@ -6,6 +6,16 @@ import { PushSubscriptionOptions } from './types';
 import { RegisterSubscription } from './register-subscription';
 import { ReceiveNotification } from './receive-notification';
 
+const currentUrlPromise = new Promise<string>((resolve) => {
+  function handleFetch(event: FetchEvent) {
+    resolve(event.request.url);
+
+    self.removeEventListener('fetch', handleFetch);
+  }
+
+  self.addEventListener('fetch', handleFetch);
+});
+
 export class PushNotifications {
   private apiKey: string;
 
@@ -17,6 +27,8 @@ export class PushNotifications {
 
   public async registerPushSubscription() {
     const registerSubscription = new RegisterSubscription(this.apiKey);
-    await registerSubscription.registerPushSubscription();
+
+    const currentUrl = await currentUrlPromise;
+    await registerSubscription.registerPushSubscription(currentUrl);
   }
 }
