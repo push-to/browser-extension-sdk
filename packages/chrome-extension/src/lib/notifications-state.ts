@@ -1,3 +1,4 @@
+import { PushNotificationEvents } from './push-notification-events';
 import { PushNotificationData } from './types';
 
 export class NotificationsState {
@@ -30,5 +31,16 @@ export class NotificationsState {
 
   public getNotification(notificationId: string) {
     return this.notifications.get(notificationId);
+  }
+
+  public removeNotificationsByTag(apiKey: string, tag: string) {
+    this.notifications.forEach((notification, notificationId) => {
+      if (notification.options.data.tag === tag) {
+        this.removeNotification(notificationId);
+        PushNotificationEvents.getInstance(apiKey).handleAutoDismissed(
+          notificationId
+        );
+      }
+    });
   }
 }

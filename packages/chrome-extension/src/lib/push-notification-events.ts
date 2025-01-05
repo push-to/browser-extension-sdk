@@ -34,6 +34,8 @@ export class PushNotificationEvents {
       notificationId,
       PushNotificationStatus.AUTO_DISMISSED
     );
+
+    chrome.notifications.clear(notificationId);
   }
 
   private handleNotificationClick(notificationId: string) {

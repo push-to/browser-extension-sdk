@@ -34,7 +34,6 @@ export class Dismiss {
         );
 
         if (notification) {
-          chrome.notifications.clear(notification);
           PushNotificationEvents.getInstance(apiKey).handleAutoDismissed(
             correlationId
           );

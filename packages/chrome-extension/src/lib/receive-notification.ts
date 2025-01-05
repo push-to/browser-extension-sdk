@@ -72,6 +72,13 @@ export class ReceiveNotification {
       options.requireInteraction = true;
     }
 
+    if (data.options.data?.tag) {
+      NotificationsState.instance.removeNotificationsByTag(
+        this.apiKey,
+        data.options.data.tag
+      );
+    }
+
     chrome.notifications.create(data.options.data.correlationId, options);
 
     NotificationsState.instance.addNotification(

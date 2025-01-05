@@ -22,6 +22,7 @@ export interface PushNotificationOptions {
     correlationId: string;
     badge?: PushNotificationBadge;
     link?: string;
+    tag?: string;
   };
 }
 
