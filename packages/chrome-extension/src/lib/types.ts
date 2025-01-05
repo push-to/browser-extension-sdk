@@ -16,6 +16,7 @@ export interface AutoDismissOptions {
 export interface PushNotificationOptions {
   body: string;
   icon: string;
+  contextMessage?: string;
   data: {
     autoDismissOptions: AutoDismissOptions;
     correlationId: string;

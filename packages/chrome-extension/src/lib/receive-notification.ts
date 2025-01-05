@@ -56,13 +56,17 @@ export class ReceiveNotification {
     const icon = this.defaultNotificationIcon ?? data.options.icon;
 
     const options: chrome.notifications.NotificationOptions<true> = {
+      title,
+      message: body,
       priority: 1,
       type: 'basic',
       isClickable: true,
-      title,
-      message: body,
       iconUrl: icon,
     };
+
+    if (data.options.contextMessage) {
+      options.contextMessage = data.options.contextMessage;
+    }
 
     if (data.options.data?.autoDismissOptions?.behavior === 'device_default') {
       options.requireInteraction = true;
