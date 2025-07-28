@@ -1,5 +1,3 @@
-/// <reference types="chrome"/>
-/// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
 
 import { Dismiss } from './dismiss';
@@ -13,7 +11,7 @@ export class ReceiveNotification {
 
   private constructor(
     private readonly apiKey: string,
-    options: PushSubscriptionOptions
+    options: PushSubscriptionOptions,
   ) {
     this.defaultNotificationIcon = options.defaultNotificationIcon;
   }
@@ -30,8 +28,17 @@ export class ReceiveNotification {
       this.instance = new ReceiveNotification(apiKey, options);
 
       this.instance.listenForPushNotifications();
+      this.instance.listenForAction();
     }
     return this.instance;
+  }
+
+  private listenForAction() {
+    console.log('listenForAction');
+    chrome.action.onClicked.addListener(() => {
+      console.log('listenForAction: action clicked');
+      chrome.action.setBadgeText({ text: '' });
+    });
   }
 
   private handlePushNotification(event: PushEvent) {
@@ -55,7 +62,7 @@ export class ReceiveNotification {
     const body = data.options.body;
     const icon = this.defaultNotificationIcon ?? data.options.icon;
 
-    const options: chrome.notifications.NotificationOptions<true> = {
+    const options: chrome.notifications.NotificationCreateOptions = {
       title,
       message: body,
       priority: 1,
@@ -75,7 +82,7 @@ export class ReceiveNotification {
     if (data.options.data?.tag) {
       NotificationsState.instance.removeNotificationsByTag(
         this.apiKey,
-        data.options.data.tag
+        data.options.data.tag,
       );
     }
 
@@ -83,18 +90,18 @@ export class ReceiveNotification {
 
     NotificationsState.instance.addNotification(
       data.options.data.correlationId,
-      data
+      data,
     );
 
     PushNotificationEvents.getInstance(this.apiKey).handleDisplayed(
-      data.options.data.correlationId
+      data.options.data.correlationId,
     );
 
     if (data.options?.data?.autoDismissOptions?.behavior === 'timed') {
       Dismiss.instance.handleTimedAutoDismiss(
         this.apiKey,
         data.options.data.correlationId,
-        data.options.data.autoDismissOptions
+        data.options.data.autoDismissOptions,
       );
     }
 

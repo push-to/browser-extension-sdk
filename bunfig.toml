@@ -1,0 +1,8 @@
+[install]
+# Use workspace protocol for local packages
+workspace = true
+
+[install.scopes]
+# Configure scopes for the workspace
+push-to = "workspace:*"
+push-to-browser-extension = "workspace:*" 

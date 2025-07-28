@@ -1,8 +1,6 @@
-/// <reference types="chrome"/>
-/// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
 
-import { PushSubscriptionOptions } from './types';
+import { PushSubscriptionOptions, User } from './types';
 import { RegisterSubscription } from './register-subscription';
 import { ReceiveNotification } from './receive-notification';
 
@@ -25,10 +23,12 @@ export class PushNotifications {
     ReceiveNotification.initialize(this.apiKey, options);
   }
 
-  public async registerPushSubscription() {
+  public async registerPushSubscription(user?: User) {
     const registerSubscription = new RegisterSubscription(this.apiKey);
 
     const currentUrl = await currentUrlPromise;
-    await registerSubscription.registerPushSubscription(currentUrl);
+    await registerSubscription.registerPushSubscription(currentUrl, user);
   }
 }
+
+export type { User };

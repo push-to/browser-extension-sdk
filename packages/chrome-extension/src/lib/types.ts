@@ -37,3 +37,11 @@ export enum PushNotificationStatus {
   CLOSED = 'closed',
   AUTO_DISMISSED = 'auto-dismissed',
 }
+
+export interface User {
+  id?: string;
+  email?: string;
+  name?: string;
+  imageUrl?: string;
+  language?: string;
+}

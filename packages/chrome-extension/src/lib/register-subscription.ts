@@ -1,17 +1,16 @@
-/// <reference types="chrome"/>
-/// <reference lib="webworker" />
 declare let self: ServiceWorkerGlobalScope;
 
 import { CORE_URL } from './constants';
 import { PushNotificationStorage } from './push-notification-storage';
+import { User } from './types';
 
 export class RegisterSubscription {
-  private registerUrl: string = CORE_URL + '/register-subscription';
+  private registerUrl: string = CORE_URL + '/subscriptions';
   private vapidKeysUrl: string = CORE_URL + '/vapid-keys';
 
   constructor(private readonly apiKey: string) {}
 
-  public async registerPushSubscription(currentUrl: string) {
+  public async registerPushSubscription(currentUrl: string, user?: User) {
     if (this.registerUrl === undefined) {
       throw new Error('registerUrl is not set');
     }
@@ -31,6 +30,7 @@ export class RegisterSubscription {
         context: {
           url: currentUrl,
         },
+        user,
       }),
       headers: {
         'Content-Type': 'application/json',

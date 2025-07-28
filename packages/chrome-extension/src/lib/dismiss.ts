@@ -1,7 +1,3 @@
-/// <reference types="chrome"/>
-/// <reference lib="webworker" />
-declare let self: ServiceWorkerGlobalScope;
-
 import { PushNotificationEvents } from './push-notification-events';
 import { AutoDismissOptions } from './types';
 
@@ -21,7 +17,7 @@ export class Dismiss {
   public async handleTimedAutoDismiss(
     apiKey: string,
     correlationId: string,
-    autoDismissOptions: AutoDismissOptions
+    autoDismissOptions: AutoDismissOptions,
   ) {
     if (autoDismissOptions?.behavior === 'timed') {
       const dismissTimeoutID = setTimeout(async () => {
@@ -30,12 +26,12 @@ export class Dismiss {
         console.log('notifications', notificationsIds);
 
         const notification = notificationsIds.find(
-          (notification) => notification === correlationId
+          (notification) => notification === correlationId,
         );
 
         if (notification) {
           PushNotificationEvents.getInstance(apiKey).handleAutoDismissed(
-            correlationId
+            correlationId,
           );
         } else {
           this.dismissTimeoutIDsCache.delete(correlationId);

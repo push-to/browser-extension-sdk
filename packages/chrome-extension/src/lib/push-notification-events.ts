@@ -1,14 +1,10 @@
-/// <reference types="chrome"/>
-/// <reference lib="webworker" />
-declare let self: ServiceWorkerGlobalScope;
-
 import { CORE_URL } from './constants';
 import { NotificationsState } from './notifications-state';
 import { PushNotificationStatus } from './types';
 
 export class PushNotificationEvents {
   private static pushNotificationEvents: PushNotificationEvents;
-  private trackNotificationUrl: string = CORE_URL + '/track-notification';
+  private trackNotificationUrl: string = CORE_URL + '/notifications/track';
 
   constructor(private readonly apiKey: string) {}
 
@@ -25,14 +21,14 @@ export class PushNotificationEvents {
   public handleDisplayed(notificationId: string) {
     this.sendTrackNotificationEvent(
       notificationId,
-      PushNotificationStatus.DELIVERED
+      PushNotificationStatus.DELIVERED,
     );
   }
 
   public handleAutoDismissed(notificationId: string) {
     this.sendTrackNotificationEvent(
       notificationId,
-      PushNotificationStatus.AUTO_DISMISSED
+      PushNotificationStatus.AUTO_DISMISSED,
     );
 
     chrome.notifications.clear(notificationId);
@@ -41,7 +37,7 @@ export class PushNotificationEvents {
   private handleNotificationClick(notificationId: string) {
     this.sendTrackNotificationEvent(
       notificationId,
-      PushNotificationStatus.CLICKED
+      PushNotificationStatus.CLICKED,
     );
 
     chrome.notifications.clear(notificationId);
@@ -61,23 +57,23 @@ export class PushNotificationEvents {
   private handleNotificationClose(notificationId: string, _byUser: boolean) {
     this.sendTrackNotificationEvent(
       notificationId,
-      PushNotificationStatus.CLOSED
+      PushNotificationStatus.CLOSED,
     );
   }
 
   private listenForPushNotificationEvents() {
     chrome.notifications.onClicked.addListener(
-      this.handleNotificationClick.bind(this)
+      this.handleNotificationClick.bind(this),
     );
 
     chrome.notifications.onClosed.addListener(
-      this.handleNotificationClose.bind(this)
+      this.handleNotificationClose.bind(this),
     );
   }
 
   private async sendTrackNotificationEvent(
     notificationId: string,
-    status: PushNotificationStatus
+    status: PushNotificationStatus,
   ) {
     await fetch(this.trackNotificationUrl, {
       method: 'POST',

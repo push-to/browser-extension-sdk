@@ -3,6 +3,12 @@ import { config } from 'dotenv';
 
 config();
 
+const PUSHTO_CORE_URL = process.env.PUSHTO_CORE_URL;
+
+if (!PUSHTO_CORE_URL) {
+  throw new Error('PUSHTO_CORE_URL is not set');
+}
+
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['esm', 'cjs'],
@@ -15,7 +21,7 @@ export default defineConfig({
   },
   clean: true,
   env: {
-    PUSHTO_CORE_URL: process.env.PUSHTO_CORE_URL!,
+    PUSHTO_CORE_URL,
   },
   sourcemap: true,
   target: 'es2020',

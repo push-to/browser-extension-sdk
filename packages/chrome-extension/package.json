@@ -22,12 +22,12 @@
     "clean": "rm -rf dist .turbo node_modules"
   },
   "dependencies": {
-    "@types/chrome": "^0.0.260",
-    "@types/node": "^22.10.2"
+    "@types/chrome": "^0.0.332",
+    "@types/node": "^24.0.12"
   },
   "devDependencies": {
-    "dotenv": "^16.4.7",
-    "tsup": "^8.0.0",
-    "typescript": "^5.0.0"
+    "dotenv": "^17.2.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3"
   }
 }

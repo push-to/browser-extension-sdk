@@ -1,11 +1,7 @@
-/// <reference types="chrome"/>
-/// <reference lib="webworker" />
-declare let self: ServiceWorkerGlobalScope;
-
 export class PushNotificationStorage {
   public static async getAnonymousId() {
     let { pt_anonymousId } = (await chrome.storage.local.get(
-      'pt_anonymousId'
+      'pt_anonymousId',
     )) as {
       pt_anonymousId: string;
     };
