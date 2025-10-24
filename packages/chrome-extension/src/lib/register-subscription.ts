@@ -21,37 +21,76 @@ export class RegisterSubscription {
     const subscription = await this.subscribePush(registration);
     const anonymousId = await PushNotificationStorage.getAnonymousId();
 
-    await fetch(this.registerUrl, {
-      method: 'POST',
-      body: JSON.stringify({
-        anonymousId,
-        browserLanguage: navigator.language,
-        subscription,
-        context: {
-          url: currentUrl,
+    let response: Response;
+    try {
+      response = await fetch(this.registerUrl, {
+        method: 'POST',
+        body: JSON.stringify({
+          anonymousId,
+          browserLanguage: navigator.language,
+          subscription,
+          context: {
+            url: currentUrl,
+          },
+          user,
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
         },
-        user,
-      }),
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-    });
+      });
+    } catch (error) {
+      // Network error or fetch failure
+      throw new Error(
+        `Failed to register push subscription at ${this.registerUrl}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unable to read error response');
+      throw new Error(
+        `Failed to register push subscription: HTTP ${response.status} ${response.statusText}. ${errorText}`
+      );
+    }
   }
 
   private async subscribePush(registration: ServiceWorkerRegistration) {
-    const response = await fetch(this.vapidKeysUrl, {
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-    });
-    const data = await response.json();
+    let response: Response;
+
+    try {
+      response = await fetch(this.vapidKeysUrl, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+      });
+    } catch (error) {
+      // Network error or fetch failure
+      throw new Error(
+        `Failed to fetch VAPID keys from ${this.vapidKeysUrl}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unable to read error response');
+      throw new Error(
+        `Failed to fetch VAPID keys: HTTP ${response.status} ${response.statusText}. ${errorText}`
+      );
+    }
+
+    let data: any;
+    try {
+      data = await response.json();
+    } catch (error) {
+      throw new Error(
+        `Failed to parse VAPID keys response as JSON: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
 
     const publicVapidKey = data.publicVapidKey;
 
     if (publicVapidKey === undefined) {
-      throw new Error('PUBLIC_VAPID_KEY is not set');
+      throw new Error('PUBLIC_VAPID_KEY is not set in API response');
     }
 
     const subscription = await registration.pushManager.subscribe({
