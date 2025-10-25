@@ -41,7 +41,12 @@ jobs:
           PUSHTO_CORE_URL: ${{ secrets.PUSHTO_CORE_URL }}
 
       - name: Run tests
-        run: bun test --if-present
+        run: |
+          if find . -name "*.test.*" -o -name "*.spec.*" | grep -q .; then
+            bun test
+          else
+            echo "No test files found, skipping tests..."
+          fi
 
       - name: Release
         env:
