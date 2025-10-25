@@ -45,10 +45,22 @@
       }
     ],
     [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "node -e \"const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('packages/chrome-extension/package.json', 'utf8')); pkg.version = '${nextRelease.version}'; fs.writeFileSync('packages/chrome-extension/package.json', JSON.stringify(pkg, null, 2) + '\\n');\""
+      }
+    ],
+    [
       "@semantic-release/npm",
       {
         "pkgRoot": "packages/chrome-extension",
-        "npmPublish": true
+        "npmPublish": false
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "publishCmd": "cd packages/chrome-extension && npm publish --access public"
       }
     ],
     [
