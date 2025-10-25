@@ -42,10 +42,11 @@ jobs:
 
       - name: Run tests
         run: |
-          if find . -name "*.test.*" -o -name "*.spec.*" | grep -q .; then
+          # Only run tests if test files exist in packages directory
+          if find packages -type f \( -name "*.test.*" -o -name "*.spec.*" \) 2>/dev/null | grep -q .; then
             bun test
           else
-            echo "No test files found, skipping tests..."
+            echo "No test files found in packages directory, skipping..."
           fi
 
       - name: Release
