@@ -15,6 +15,13 @@ export class RegisterSubscription {
       throw new Error('registerUrl is not set');
     }
 
+    // Check if Service Worker is available
+    if (typeof self === 'undefined' || !self.registration) {
+      throw new Error(
+        'Service Worker registration is not available. Ensure this code is running in a Service Worker context and the Service Worker is properly registered.'
+      );
+    }
+
     const localRegistration = self.registration;
 
     const registration = localRegistration;

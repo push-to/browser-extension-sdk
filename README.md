@@ -106,6 +106,63 @@ pnpm dev
 
 Contributions are welcome! Please read our contributing guidelines before submitting a pull request.
 
+### Release Process
+
+This project uses **automated releases** powered by [semantic-release](https://github.com/semantic-release/semantic-release). When code is merged to the `main` branch, the release process automatically:
+
+1. Analyzes commit messages to determine the version bump
+2. Updates the package version
+3. Generates a changelog
+4. Creates a git tag
+5. Publishes to NPM
+6. Creates a GitHub release
+
+#### Commit Message Format
+
+To trigger releases, use [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+**Types and their effects:**
+- `feat:` - New feature (triggers **minor** version bump, e.g., 1.0.0 → 1.1.0)
+- `fix:` - Bug fix (triggers **patch** version bump, e.g., 1.0.0 → 1.0.1)
+- `perf:` - Performance improvement (triggers **patch** version bump)
+- `docs:` - Documentation changes (triggers **patch** version bump)
+- `refactor:` - Code refactoring (triggers **patch** version bump)
+- `chore:` - Maintenance tasks (no release)
+- `test:` - Test changes (no release)
+- `ci:` - CI/CD changes (no release)
+
+**Breaking changes:**
+Add `BREAKING CHANGE:` in the commit footer to trigger a **major** version bump (e.g., 1.0.0 → 2.0.0):
+
+```
+feat: redesign notification API
+
+BREAKING CHANGE: The notification options interface has changed.
+Old code using `notificationIcon` must be updated to `defaultNotificationIcon`.
+```
+
+**Examples:**
+```bash
+# Patch release (1.0.0 → 1.0.1)
+git commit -m "fix: resolve subscription registration error"
+
+# Minor release (1.0.0 → 1.1.0)
+git commit -m "feat: add support for notification actions"
+
+# Major release (1.0.0 → 2.0.0)
+git commit -m "feat!: redesign core API
+
+BREAKING CHANGE: Complete API redesign for better type safety"
+```
+
 ## License
 
 MIT License
