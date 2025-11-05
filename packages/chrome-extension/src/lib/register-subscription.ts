@@ -14,11 +14,10 @@ export class RegisterSubscription {
     if (this.registerUrl === undefined) {
       throw new Error('registerUrl is not set');
     }
-
     // Check if Service Worker is available
     if (typeof self === 'undefined' || !self.registration) {
       throw new Error(
-        'Service Worker registration is not available. Ensure this code is running in a Service Worker context and the Service Worker is properly registered.'
+        'Service Worker registration is not available. Ensure this code is running in a Service Worker context and the Service Worker is properly registered.',
       );
     }
 
@@ -49,14 +48,16 @@ export class RegisterSubscription {
     } catch (error) {
       // Network error or fetch failure
       throw new Error(
-        `Failed to register push subscription at ${this.registerUrl}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to register push subscription at ${this.registerUrl}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error response');
+      const errorText = await response
+        .text()
+        .catch(() => 'Unable to read error response');
       throw new Error(
-        `Failed to register push subscription: HTTP ${response.status} ${response.statusText}. ${errorText}`
+        `Failed to register push subscription: HTTP ${response.status} ${response.statusText}. ${errorText}`,
       );
     }
   }
@@ -74,14 +75,16 @@ export class RegisterSubscription {
     } catch (error) {
       // Network error or fetch failure
       throw new Error(
-        `Failed to fetch VAPID keys from ${this.vapidKeysUrl}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to fetch VAPID keys from ${this.vapidKeysUrl}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error response');
+      const errorText = await response
+        .text()
+        .catch(() => 'Unable to read error response');
       throw new Error(
-        `Failed to fetch VAPID keys: HTTP ${response.status} ${response.statusText}. ${errorText}`
+        `Failed to fetch VAPID keys: HTTP ${response.status} ${response.statusText}. ${errorText}`,
       );
     }
 
@@ -90,7 +93,7 @@ export class RegisterSubscription {
       data = await response.json();
     } catch (error) {
       throw new Error(
-        `Failed to parse VAPID keys response as JSON: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to parse VAPID keys response as JSON: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
