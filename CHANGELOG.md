@@ -1,3 +1,9 @@
+## [0.0.15](https://github.com/push-to/browser-extension-sdk/compare/v0.0.14...v0.0.15) (2025-11-05)
+
+### Bug Fixes
+
+* the way it is getting the extension URL ([5752f8a](https://github.com/push-to/browser-extension-sdk/commit/5752f8ad28582b27e49ded73b5af44213be3f1bf))
+
 ## [0.0.14](https://github.com/push-to/browser-extension-sdk/compare/v0.0.13...v0.0.14) (2025-10-25)
 
 ### Bug Fixes
