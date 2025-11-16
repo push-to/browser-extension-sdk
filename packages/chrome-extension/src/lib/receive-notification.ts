@@ -34,9 +34,7 @@ export class ReceiveNotification {
   }
 
   private listenForAction() {
-    console.log('listenForAction');
     chrome.action.onClicked.addListener(() => {
-      console.log('listenForAction: action clicked');
       chrome.action.setBadgeText({ text: '' });
     });
   }
