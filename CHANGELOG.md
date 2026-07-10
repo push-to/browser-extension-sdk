@@ -1,3 +1,9 @@
+## [0.0.17](https://github.com/push-to/browser-extension-sdk/compare/v0.0.16...v0.0.17) (2026-07-10)
+
+### Bug Fixes
+
+* add repository metadata required by npm provenance validation ([9ec3e0f](https://github.com/push-to/browser-extension-sdk/commit/9ec3e0f10c08d4a1b6c831f87bcf173c6728734e))
+
 ## [0.0.16](https://github.com/push-to/browser-extension-sdk/compare/v0.0.15...v0.0.16) (2026-07-10)
 
 ### Bug Fixes
