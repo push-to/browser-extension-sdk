@@ -1,3 +1,9 @@
+## [0.0.16](https://github.com/push-to/browser-extension-sdk/compare/v0.0.15...v0.0.16) (2026-07-10)
+
+### Bug Fixes
+
+* survive MV3 service-worker termination — durable state, alarms, correct tracking ([9171315](https://github.com/push-to/browser-extension-sdk/commit/91713153100c4497f2047d25610793f824b9554d))
+
 ## [0.0.15](https://github.com/push-to/browser-extension-sdk/compare/v0.0.14...v0.0.15) (2025-11-05)
 
 ### Bug Fixes
