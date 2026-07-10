@@ -29,14 +29,22 @@ export class ReceiveNotification {
 
       this.instance.listenForPushNotifications();
       this.instance.listenForAction();
+
+      // Register the durable-dismiss alarm listener at top-level SW startup so a
+      // worker re-woken by an alarm it never scheduled can still handle it.
+      Dismiss.instance.registerListeners(apiKey);
+
+      // Wire chrome.notifications.onClicked/onClosed at top-level startup too.
+      // getInstance() registers those listeners; without this a worker woken
+      // solely by a notification click would have no onClicked listener at
+      // dispatch time and the click (track + link + badge-clear) would be lost.
+      PushNotificationEvents.getInstance(apiKey);
     }
     return this.instance;
   }
 
   private listenForAction() {
-    console.log('listenForAction');
     chrome.action.onClicked.addListener(() => {
-      console.log('listenForAction: action clicked');
       chrome.action.setBadgeText({ text: '' });
     });
   }
@@ -80,7 +88,7 @@ export class ReceiveNotification {
     }
 
     if (data.options.data?.tag) {
-      NotificationsState.instance.removeNotificationsByTag(
+      await NotificationsState.instance.removeNotificationsByTag(
         this.apiKey,
         data.options.data.tag,
       );
@@ -88,7 +96,7 @@ export class ReceiveNotification {
 
     chrome.notifications.create(data.options.data.correlationId, options);
 
-    NotificationsState.instance.addNotification(
+    await NotificationsState.instance.addNotification(
       data.options.data.correlationId,
       data,
     );

@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "PushTo Wave 1 - Q5 real-device smoke",
+  "version": "0.0.1",
+  "description": "Throwaway harness for Phase 3 Wave 1 Q5 / AC1: real-device MV3 durability check using the actual built @push-to/chrome-extension SDK. Not published. Requires a real PushTo admin API key supplied by the tester -- never hardcode one here.",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["notifications", "alarms", "storage"],
+  "action": {}
+}

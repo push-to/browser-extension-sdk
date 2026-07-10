@@ -34,45 +34,103 @@ yarn add @push-to/chrome-extension
 
 ## Getting Started
 
-1. In your background script, initialize the Push To extension:
+1. Declare the service worker and the required permissions in your `manifest.json`.
+
+The SDK persists notification state with `chrome.storage.local`, schedules
+durable auto-dismissals with `chrome.alarms`, and shows/clears notifications
+with `chrome.notifications`, so it needs the `storage`, `alarms`, and
+`notifications` permissions. It must run in the extension's background service
+worker (Manifest V3).
+
+```json
+// manifest.json
+{
+  "manifest_version": 3,
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["notifications", "alarms", "storage"],
+  "action": {}
+}
+```
+
+> `chrome.tabs.create` (used to open a notification's link) does **not** require
+> the `tabs` permission. The empty `"action": {}` key is needed so the SDK can
+> set/clear the toolbar badge.
+
+2. Initialize the Push To extension at the **top level** of your background
+service worker.
+
+> ⚠️ **`new PushNotifications(...)` must run synchronously at the top level of
+> the service worker — not inside another event callback** (e.g. not inside
+> `chrome.runtime.onInstalled`). This is required by MV3's ephemeral worker
+> model:
+> - MV3 only delivers wake events (`push`, `alarm`, notification clicks) to
+>   listeners that were registered **synchronously at worker startup**. A
+>   worker re-woken by an auto-dismiss alarm re-runs its top-level code, so the
+>   SDK's listeners must be registered there or the wake is lost.
+> - The API key is held in memory and is only re-hydrated when initialization
+>   runs at startup. Initializing lazily would leave a re-woken worker unable to
+>   report the auto-dismiss event.
 
 ```typescript
-// background.js
+// background.js — runs at the top level of the service worker
 
-import { PushToExtension } from '@push-to/chrome-extension';
+import { PushNotifications } from '@push-to/chrome-extension';
 
-const pushTo = new PushToExtension({
+const pushTo = new PushNotifications({
   apiKey: 'your-api-key',
-  // Optional: Default notification options
+  // Optional: default icon used for every notification
   defaultNotificationIcon: 'https://example.com/icon.png'
 });
 ```
 
-2. Register for push notifications:
+3. Register for push notifications:
 
 ```typescript
 // background.js
 
+// Anonymous subscriber:
 await pushTo.registerPushSubscription();
+
+// Or associate the subscriber with a user:
+await pushTo.registerPushSubscription({
+  id: 'user-123',
+  email: 'jane@example.com',
+  name: 'Jane Doe'
+});
 ```
 
 ## API Reference
 
-### PushToExtension
+### PushNotifications
 
 #### Constructor Options
 
 ```typescript
 interface PushSubscriptionOptions {
   apiKey: string; // Required: Your Push To API key
-  defaultNotificationIcon?: string;
+  defaultNotificationIcon?: string; // Optional: default notification icon
 }
 ```
 
 #### Methods
 
-- `registerPushSubscription(localRegistration?: ServiceWorkerRegistration): Promise<void>`
-  - Registers the service worker and sets up push notifications
+- `registerPushSubscription(user?: User): Promise<void>`
+  - Registers the push subscription with Push To. Pass an optional `User` to
+    associate the subscriber with an identity; omit it for an anonymous
+    subscriber.
+
+```typescript
+interface User {
+  id?: string;
+  email?: string;
+  name?: string;
+  imageUrl?: string;
+  language?: string;
+}
+```
 
 ## Browser Support
 
