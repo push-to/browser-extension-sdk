@@ -120,4 +120,4 @@ jobs:
           fi
 
       - name: Publish
-        run: cd packages/chrome-extension && npm publish --access public
+        run: cd packages/chrome-extension && npm publish --access public --tag latest
