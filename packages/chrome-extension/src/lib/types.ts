@@ -17,6 +17,16 @@ export interface PushSubscriptionOptions {
 
 export interface User {
   id?: string;
+  /**
+   * Identity proof (`user_hash`) for `id`, computed by **your server**:
+   * `hex(HMAC-SHA256(identity_secret, id))`, over the `id` exactly as the SDK
+   * sends it: a string trimmed of surrounding whitespace, a number as its
+   * decimal string, nothing else changed. Required when the tenant has
+   * identity verification on. Without an `id` it is dropped, with a
+   * `console.warn`. Never compute it in the extension: the secret must not
+   * ship.
+   */
+  hash?: string;
   email?: string;
   name?: string;
   imageUrl?: string;
@@ -100,18 +110,24 @@ export interface FeedbackEvent {
   occurred_at?: string;
 }
 
-/** Body of `POST /v1/users`, as far as the SDK fills it. */
-export interface UpsertUserBody {
+/** The user part of the `POST /v1/subscriptions` body. */
+export interface SubscriptionUserFields {
   external_id: string;
+  /** Only with an identified `external_id`; see `User.hash`. */
+  user_hash?: string;
   email?: string;
   first_name?: string;
   last_name?: string;
 }
 
-/** Body of `POST /v1/users/{id}/endpoints`. */
-export interface RegisterEndpointBody {
-  endpoint: string;
-  keys: { p256dh: string; auth: string };
+/** Body of `POST /v1/subscriptions`, as far as the SDK fills it. */
+export interface RegisterSubscriptionBody extends SubscriptionUserFields {
+  /** `PushSubscription.toJSON()`. push-api ignores `expirationTime`. */
+  subscription: {
+    endpoint: string;
+    expirationTime: number | null;
+    keys: { p256dh: string; auth: string };
+  };
   metadata: Record<string, string>;
 }
 

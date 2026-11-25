@@ -241,11 +241,7 @@ describe('registration cache max age (S3)', () => {
 
     age('pt_registration', 'registeredAt', 2 * HOUR); // 25 h in total
     await init().registerPushSubscription({ id: 'user-1' });
-    expect(requests()).toEqual([
-      'GET /v1/vapid-key',
-      'POST /v1/users',
-      'POST /v1/users/42/endpoints',
-    ]);
+    expect(requests()).toEqual(['GET /v1/vapid-key', 'POST /v1/subscriptions']);
     expect(env.subscribeCalls.length).toBe(1); // the subscription is reused
     expect(
       Math.abs(Date.now() - env.storage['pt_registration'].registeredAt),
@@ -257,7 +253,7 @@ describe('registration cache max age (S3)', () => {
     expect(REGISTRATION_MAX_AGE_MS).toBe(24 * HOUR);
   });
 
-  test('with `vapidPublicKey` a stale registration re-sends the two POSTs only', async () => {
+  test('with `vapidPublicKey` a stale registration re-sends the POST only', async () => {
     const options = { vapidPublicKey: vapidKey(1) };
     await init(options).registerPushSubscription();
     age('pt_registration', 'registeredAt', 25 * HOUR);
@@ -265,10 +261,7 @@ describe('registration cache max age (S3)', () => {
 
     await init(options).registerPushSubscription();
 
-    expect(requests()).toEqual([
-      'POST /v1/users',
-      'POST /v1/users/42/endpoints',
-    ]);
+    expect(requests()).toEqual(['POST /v1/subscriptions']);
   });
 
   test('a stored time in the future (clock set back) is not trusted', async () => {
@@ -278,7 +271,7 @@ describe('registration cache max age (S3)', () => {
 
     await init().registerPushSubscription();
 
-    expect(requests()).toContain('POST /v1/users');
+    expect(requests()).toContain('POST /v1/subscriptions');
   });
 
   test('a cache entry without a timestamp (or garbage) is ignored', async () => {
@@ -291,7 +284,7 @@ describe('registration cache max age (S3)', () => {
       env.storage['pt_registration'] = stale;
       env.fetchCalls.length = 0;
       await init().registerPushSubscription();
-      expect(requests()).toContain('POST /v1/users');
+      expect(requests()).toContain('POST /v1/subscriptions');
     }
   });
 });
@@ -299,11 +292,7 @@ describe('registration cache max age (S3)', () => {
 describe('VAPID key cache (S4)', () => {
   test('an unchanged re-register on a later worker start makes no request at all', async () => {
     await init().registerPushSubscription({ id: 'user-1' });
-    expect(requests()).toEqual([
-      'GET /v1/vapid-key',
-      'POST /v1/users',
-      'POST /v1/users/42/endpoints',
-    ]);
+    expect(requests()).toEqual(['GET /v1/vapid-key', 'POST /v1/subscriptions']);
     expect(env.storage['pt_vapidKey']).toEqual({
       publicKey: env.serverVapidKey,
       baseUrl: `${API_BASE_URL}/v1`,
@@ -338,11 +327,7 @@ describe('VAPID key cache (S4)', () => {
 
     await init().registerPushSubscription({ id: 'user-2' });
 
-    expect(requests()).toEqual([
-      'GET /v1/vapid-key',
-      'POST /v1/users',
-      'POST /v1/users/42/endpoints',
-    ]);
+    expect(requests()).toEqual(['GET /v1/vapid-key', 'POST /v1/subscriptions']);
     expect(env.unsubscribeCalls).toBe(0);
   });
 
@@ -365,7 +350,7 @@ describe('VAPID key cache (S4)', () => {
     expect(
       new Uint8Array(env.subscription.options.applicationServerKey)[1],
     ).toBe(2);
-    expect(env.fetchCalls.at(-1)?.body.endpoint).toMatch(/sub-2$/);
+    expect(env.fetchCalls.at(-1)?.body.subscription.endpoint).toMatch(/sub-2$/);
     expect(env.storage['pt_vapidKey'].publicKey).toBe(vapidKey(2));
   });
 
@@ -378,12 +363,8 @@ describe('VAPID key cache (S4)', () => {
 
     expect(env.unsubscribeCalls).toBe(1);
     expect(env.subscription.endpoint).toMatch(/sub-2$/);
-    expect(requests()).toEqual([
-      'GET /v1/vapid-key',
-      'POST /v1/users',
-      'POST /v1/users/42/endpoints',
-    ]);
-    expect(env.fetchCalls[2].body.endpoint).toMatch(/sub-2$/);
+    expect(requests()).toEqual(['GET /v1/vapid-key', 'POST /v1/subscriptions']);
+    expect(env.fetchCalls[1].body.subscription.endpoint).toMatch(/sub-2$/);
     expect(env.fetchCalls[1].body.first_name).toBe('New');
   });
 
@@ -403,10 +384,7 @@ describe('VAPID key cache (S4)', () => {
   test('the `vapidPublicKey` option is never cached and never fetched', async () => {
     await init({ vapidPublicKey: vapidKey(5) }).registerPushSubscription();
     expect(env.storage['pt_vapidKey']).toBeUndefined();
-    expect(requests()).toEqual([
-      'POST /v1/users',
-      'POST /v1/users/42/endpoints',
-    ]);
+    expect(requests()).toEqual(['POST /v1/subscriptions']);
   });
 });
 
@@ -503,15 +481,14 @@ describe('identity', () => {
       sdk.registerPushSubscription(),
     ]);
 
-    const externalIds = env.fetchCalls
-      .filter((c) => c.path === '/v1/users')
-      .map((c) => c.body.external_id);
+    const registrations = env.fetchCalls.filter(
+      (c) => c.path === '/v1/subscriptions',
+    );
+    const externalIds = registrations.map((c) => c.body.external_id);
     expect(externalIds.length).toBe(2);
     expect(new Set(externalIds).size).toBe(1);
     expect(externalIds[0]).toBe(`anon:${env.storage['pt_anonymousId']}`);
-    const anonymousIds = env.fetchCalls
-      .filter((c) => c.path.endsWith('/endpoints'))
-      .map((c) => c.body.metadata.anonymous_id);
+    const anonymousIds = registrations.map((c) => c.body.metadata.anonymous_id);
     expect(new Set(anonymousIds)).toEqual(
       new Set([env.storage['pt_anonymousId']]),
     );
@@ -576,6 +553,14 @@ describe('base URL limits', () => {
 
 describe('fetch timeout', () => {
   const api = () => new ApiClient('k', `${API_BASE_URL}/v1`);
+  const SUBSCRIPTION_BODY = {
+    external_id: 'u',
+    subscription: {
+      endpoint: 'https://fcm.googleapis.com/fcm/send/x',
+      keys: { p256dh: 'p', auth: 'a' },
+    },
+    metadata: {},
+  };
   /** A server that never answers: the fetch settles only when aborted. */
   const hang = (call: { signal?: AbortSignal }) =>
     new Promise<Response>((_resolve, reject) => {
@@ -596,7 +581,7 @@ describe('fetch timeout', () => {
     let attempts = 0;
     env.intercept = (call) => (++attempts === 1 ? hang(call) : undefined);
 
-    expect(await api().upsertUser({ external_id: 'u' })).toBe(42);
+    await api().registerSubscription(SUBSCRIPTION_BODY);
     expect(env.fetchCalls.length).toBe(2);
     expect(env.fetchCalls[0].signal?.aborted).toBe(true);
     expect(env.fetchCalls[1].signal).not.toBe(env.fetchCalls[0].signal); // one timer per attempt

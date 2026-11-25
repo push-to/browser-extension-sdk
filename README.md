@@ -97,13 +97,18 @@ const pushTo = new PushNotifications({
 > segments, campaigns, items and opportunities. Keep your sending key on your
 > server.
 >
-> What such a key **can** do: read the VAPID public key, report feedback, and
-> create or update a user by its `external_id` (the `id` you pass to
-> `registerPushSubscription`) — and the API answers that call with the user's
-> stored row. Anyone holding the key who can guess a user's id can therefore
-> read and overwrite that user's email, name and other stored fields. **Use
-> ids that cannot be guessed** (a random UUID, not a sequential number or an
-> email address).
+> What such a key **can** do, and nothing else: read the VAPID public key,
+> report feedback, and register a push subscription for a user named by its
+> `external_id` (the `id` you pass to `registerPushSubscription`). That call
+> creates the user if it does not exist; it never changes or returns an
+> existing user's email, name or other stored fields, and it cannot address a
+> user by its numeric Push To id.
+>
+> It does mean that anyone holding the key who knows or can guess a user's
+> `id` can register their own browser for that user and receive that user's
+> notifications. Turn on [identity verification](#identity-verification) to
+> close that. Until you do, **use ids that cannot be guessed** (a random UUID,
+> not a sequential number or an email address).
 
 3. Register for push notifications:
 
@@ -120,10 +125,18 @@ pushTo
   .registerPushSubscription({
     id: '7f9c2c1e-52b1-4f0e-9a51-0c1d6f3b8a44', // an id that cannot be guessed
     email: 'jane@example.com',
-    name: 'Jane Doe'
+    name: 'Jane Doe',
+    // Optional: the proof your server computed for this id, see
+    // "Identity verification".
+    hash: userHashFromYourServer
   })
   .catch((error) => console.warn('Push registration failed', error));
 ```
+
+Pass the same `User` on every call. Calling `registerPushSubscription()`
+without one after a user was registered means **logout**: the browser's
+subscription moves back to the anonymous user and stops receiving the
+identified user's notifications.
 
 A service worker script cannot use top-level `await`, so handle the promise
 with `.then` / `.catch` (or call it inside an `async` function).
@@ -166,6 +179,7 @@ interface PushSubscriptionOptions {
 ```typescript
 interface User {
   id?: string;
+  hash?: string; // identity proof for `id`, computed by your server
   email?: string;
   name?: string;
   imageUrl?: string;
@@ -175,23 +189,34 @@ interface User {
 
 ### Registration
 
-`registerPushSubscription` makes two calls: `POST /v1/users`, then
-`POST /v1/users/{id}/endpoints` with the browser's push subscription.
+`registerPushSubscription` makes one call, `POST /v1/subscriptions`, with the
+user's `external_id` and the browser's push subscription
+(`PushSubscription.toJSON()`). The API finds the
+user with that `external_id`, or creates it, and registers the subscription
+for it, all or nothing.
+
+`email` and `name` are stored **only when the call creates the user**. An
+existing user is never changed from the extension: update it from your server
+(`POST /v1/users` with a sending key).
+
+A subscription belongs to one user at a time. Registering it for another user
+(login, logout) moves it: the previous user stops receiving on this browser.
 
 **How `User` maps to the API**
 
 | `User` field | Sent as |
 | --- | --- |
-| `id` | user `external_id` (use a value that cannot be guessed, see the note on keys above). Without an `id` the SDK sends `anon:<anonymousId>` (an id it generates once and keeps in `chrome.storage.local`), so registering again updates the same user instead of creating a new one. |
+| `id` | `external_id`, with surrounding whitespace trimmed (use a value that cannot be guessed, or turn on [identity verification](#identity-verification)). Without an `id` the SDK sends `anon:<anonymousId>` (a random UUID it generates once and keeps in `chrome.storage.local`), so registering again reaches the same user instead of creating a new one. |
+| `hash` | `user_hash`, only when an `id` is given. Never sent for an anonymous subscriber: a `hash` without an `id` is dropped, with one `console.warn`. See [Identity verification](#identity-verification). |
 | `email` | user `email`. Must be a valid address, or the API answers `422`. |
 | `name` | split on the first run of whitespace into user `first_name` and `last_name` (`"Jane van der Berg"` → `Jane` / `van der Berg`; a single word is only a `first_name`). |
-| `imageUrl` | endpoint `metadata.image_url` |
-| `language` | endpoint `metadata.language` |
+| `imageUrl` | subscription `metadata.image_url` |
+| `language` | subscription `metadata.language` |
 
 Absent and empty fields are left out. The SDK never sends the user's
 `properties` or `preferences`: set those from your server.
 
-The endpoint is registered with this `metadata`: `channel` (`"extension"`),
+The subscription is registered with this `metadata`: `channel` (`"extension"`),
 `extension_id`, `browser_language`, `context_url`, `sdk_version`,
 `anonymous_id`, and `image_url` / `language` when given.
 
@@ -200,14 +225,113 @@ subscription and reuses it; it only subscribes again when there is none, or
 when the existing one was made for a different VAPID key (that one is
 unsubscribed first). After a successful registration it stores, in
 `chrome.storage.local`, the time and a hash of everything it sent (API host,
-key, user fields, endpoint, subscription keys, metadata). While that hash is
-unchanged and the registration is less than 24 hours old,
-`registerPushSubscription` makes no request.
+key, user fields, `hash`, endpoint, subscription keys, metadata). While that
+hash is unchanged and the registration is less than 24 hours old,
+`registerPushSubscription` makes no request. Only that one-way hash is kept:
+the SDK does not store `User.hash`, so pass it on every call.
 
-After 24 hours both calls are sent again even if nothing changed, and the
+After 24 hours the call is sent again even if nothing changed, and the
 VAPID key is read again. That is how a device recovers from what it cannot
 see: a subscription the API disabled, a user removed on the server, a rotated
 VAPID key. Any full registration reads the VAPID key again as well.
+
+**A subscription the API refuses.** If the API answers
+`409 endpoint_conflict` (the browser's push address is already registered
+with different keys, to this user or to another one, which this browser's own
+registrations cannot cause), the SDK unsubscribes, subscribes again and registers the new
+subscription, once. A second refusal rejects the promise.
+
+### Identity verification
+
+Without it, the `id` alone decides which user a browser subscribes to: whoever
+knows a user's id (and your public key) can receive that user's
+notifications. With identity verification, your **server** vouches for the id
+with a proof the extension cannot compute:
+
+```
+user_hash = lowercase_hex( HMAC-SHA256( key = identity_secret, message = id ) )
+```
+
+1. **Issue the identity secret**, from your server, with a key that has the
+   `sending` (or `admin`) permission:
+
+   ```sh
+   curl -X POST "$PUSH_API_URL/v1/identity-verification/secret" \
+     -H "Authorization: Bearer $PUSHTO_SENDING_KEY"
+   # 201 { "secret": "pt_idsec_…", "generation": 1, "previous_generation_valid_until": null }
+   ```
+
+   The secret is shown **only in this response**; it cannot be read again.
+   Store it as a server-side secret. It must never ship in the extension.
+2. **Compute the hash on your server** whenever it tells the extension who the
+   user is, and send it along with the id:
+
+   ```js
+   // Node
+   crypto.createHmac('sha256', secret).update(id).digest('hex');
+   ```
+   ```python
+   # Python
+   hmac.new(secret.encode(), id.encode(), hashlib.sha256).hexdigest()
+   ```
+   ```php
+   // PHP
+   hash_hmac('sha256', $id, $secret);
+   ```
+   ```ruby
+   # Ruby
+   OpenSSL::HMAC.hexdigest('SHA256', secret, id)
+   ```
+
+   To check your implementation: secret `example-secret` and id `user-123`
+   give `71a48035b503170a70367c1c0ee323ea2477df3d0f43241ff3451f463b87551e`.
+3. **Pass both to the SDK**, on every call:
+   `registerPushSubscription({ id, hash })`. Enforcement is still off, but a
+   hash that is sent is always checked, so a mistake shows up now as
+   `403 invalid_user_hash`, while users without a hash still register.
+4. **Switch enforcement on** once every client sends a hash:
+
+   ```sh
+   curl -X PATCH "$PUSH_API_URL/v1/identity-verification" \
+     -H "Authorization: Bearer $PUSHTO_SENDING_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{ "required": true }'
+   ```
+
+   `GET /v1/identity-verification` shows the current state, and
+   `{ "required": false }` switches it off again.
+
+Things to know:
+
+- **Hash exactly the string the SDK sends as `external_id`.** The API checks
+  the hash against that string byte for byte: no lower-casing, no
+  normalisation. The only thing the SDK does to a string `id` is remove
+  surrounding whitespace (JavaScript's `String.prototype.trim`); it never
+  changes case or anything inside the id. A numeric `id` is sent as its
+  decimal string (`42` → `"42"`). So `" user-1"` is sent, and must be hashed,
+  as `"user-1"`, while `"User-1"` and `"user-1"` are two different ids with
+  two different hashes. The safe rule: give the SDK and your hash function
+  the same id, with no surrounding whitespace.
+- **Enforcement is opt-in per tenant**, and off by default. While it is off, a
+  registration without a hash is accepted.
+- With enforcement on, an identified `id` without a hash is refused
+  (`403 user_hash_required`). Anonymous subscribers (no `id`) need no hash:
+  their random `anon:<uuid>` id is itself the secret.
+- **`anon:` is reserved** for ids the SDK generates. An id of exactly the
+  shape `anon:<lowercase uuid>` needs no proof, so never give one to an
+  identified user. Any other id starting with `anon:` needs its hash like any
+  identified id.
+- The hash is 64 hex digits and does not expire. To revoke hashes, rotate the
+  secret by calling `POST /v1/identity-verification/secret` again: the
+  previous secret stays valid for 24 hours by default
+  (`{ "previous_valid_for_seconds": 0 }` revokes it at once; the maximum is
+  7 days). The SDK sends the new hash as soon as you pass it (a changed
+  `hash` registers again).
+- A `403` is not retried and not remembered: the next
+  `registerPushSubscription` call tries again.
+- `503 identity_verification_unavailable` means the API deployment itself
+  cannot check hashes (it has no signing key). It is not retried either;
+  only the API's operator can fix it.
 
 ### Notifications
 
@@ -285,12 +409,24 @@ try {
 }
 ```
 
-`status` and `code` come from the API (`401 unauthorized`,
-`422 validation_error`, `422 endpoint_limit_reached` when a user already has 20
-active subscriptions, …). Two codes are the SDK's own: `network_error` (the
+`status` and `code` come from the API:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| `401` | `unauthorized` | Missing or invalid API key. |
+| `403` | `user_hash_required` | Identity verification is on and an `id` was sent without `hash`. |
+| `403` | `invalid_user_hash` | The `hash` is not the one for this `id` (or no identity secret was issued). |
+| `409` | `endpoint_conflict` | The subscription's address is registered with different keys, and still was after the SDK replaced it once. |
+| `422` | `validation_error` | A field was refused, for example an invalid `email`. |
+| `422` | `endpoint_limit_reached` | The user already has 20 active subscriptions. |
+| `503` | `identity_verification_unavailable` | The API deployment cannot check hashes at all. Not retried. |
+
+Two codes are the SDK's own: `network_error` (the
 request got no response within 10 seconds; `status` is `0`) and `http_error` (a response without
 the API's error body). A network error and a `503` are retried twice, with a
-short backoff, before the call fails.
+short backoff, before the call fails; nothing else is retried, and neither is
+`503 identity_verification_unavailable`, which trying again cannot fix. A failed
+registration is not remembered, so the next call sends it again.
 
 ## Migrating from 0.0.x
 
@@ -305,9 +441,19 @@ Push To API (`/v1`), and that changes a few things:
   after the update registers the browser with the new API (subscribing again
   if the platform's VAPID key is not the one the old subscription was made
   for). `registerPushSubscription(user?)` itself is unchanged.
+- **Registration is one call**, `POST /v1/subscriptions`. A key without
+  permissions cannot call `POST /v1/users` or
+  `POST /v1/users/{id}/endpoints`: those are for your server.
 - **`User` fields are stored differently.** See
   [Registration](#registration): `name` becomes `first_name` / `last_name`,
   and `imageUrl` / `language` are stored on the subscription, not on the user.
+- **`email` and `name` no longer update an existing user.** They are stored
+  when the registration creates the user; after that, change them from your
+  server.
+- **`User.hash` is new and optional.** It is only needed if you turn on
+  [identity verification](#identity-verification).
+- **Registering without a `User` after a login is a logout**: the
+  subscription moves back to the anonymous user.
 - **Sending.** Notifications are sent with `POST /v1/notifications`
   (`{ user_id, title, body, data }`) and the display options move into `data`:
   `link` → `data.url`, `icon` → `data.icon`, `contextMessage` →

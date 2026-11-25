@@ -1,6 +1,6 @@
 /** What the last successful registration sent; see `RegisterSubscription`. */
 export interface StoredRegistration {
-  /** SHA-256 of everything the two registration calls depend on. */
+  /** SHA-256 of everything the registration call depends on. */
   fingerprint: string;
   /** `Date.now()` of that registration. */
   registeredAt: number;

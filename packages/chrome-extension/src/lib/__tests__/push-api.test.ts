@@ -15,11 +15,13 @@ import { toUserBody } from '../register-subscription';
 import * as publicApi from '../../index';
 import {
   API_BASE_URL,
+  IDENTITY_SECRET,
   installMocks,
   jsonResponse,
   resetSingletons,
   sleep,
   TestEnv,
+  userHash,
   vapidKey,
 } from './test-env';
 
@@ -115,8 +117,7 @@ describe('base URL', () => {
 
     expect(env.fetchCalls.map((c) => c.url)).toEqual([
       'https://tenant.test/v1/vapid-key',
-      'https://tenant.test/v1/users',
-      'https://tenant.test/v1/users/42/endpoints',
+      'https://tenant.test/v1/subscriptions',
     ]);
     for (const call of env.fetchCalls) {
       expect(call.headers).toEqual({
@@ -127,26 +128,37 @@ describe('base URL', () => {
   });
 });
 
-describe('registration — POST /v1/users then POST /v1/users/{id}/endpoints', () => {
-  test('anonymous: two calls in order, `anon:` external id, the subscription and the metadata', async () => {
-    env.userId = 9001;
+const registrations = () => calls('POST', '/v1/subscriptions');
+
+const conflict = () =>
+  jsonResponse(409, {
+    error: {
+      code: 'endpoint_conflict',
+      message: 'this endpoint is registered to another user',
+    },
+  });
+
+describe('registration — POST /v1/subscriptions', () => {
+  test('anonymous: one call, `anon:<uuid>` external id, the subscription and the metadata', async () => {
     await init().registerPushSubscription();
 
     expect(env.fetchCalls.map((c) => `${c.method} ${c.path}`)).toEqual([
       'GET /v1/vapid-key',
-      'POST /v1/users',
-      'POST /v1/users/9001/endpoints',
+      'POST /v1/subscriptions',
     ]);
 
     const anonymousId = env.storage['pt_anonymousId'];
-    expect(anonymousId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(calls('POST', '/v1/users')[0].body).toEqual({
+    // The shape push-api exempts from identity verification.
+    expect(`anon:${anonymousId}`).toMatch(
+      /^anon:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(registrations()[0].body).toEqual({
       external_id: `anon:${anonymousId}`,
-    });
-
-    expect(calls('POST', '/v1/users/9001/endpoints')[0].body).toEqual({
-      endpoint: 'https://fcm.googleapis.com/fcm/send/sub-1',
-      keys: { p256dh: 'p256dh-1', auth: 'auth-1' },
+      subscription: {
+        endpoint: 'https://fcm.googleapis.com/fcm/send/sub-1',
+        expirationTime: null,
+        keys: { p256dh: 'p256dh-1', auth: 'auth-1' },
+      },
       metadata: {
         channel: 'extension',
         extension_id: 'ext-test-id',
@@ -167,7 +179,7 @@ describe('registration — POST /v1/users then POST /v1/users/{id}/endpoints', (
     expect(JSON.stringify(env.storage)).not.toContain('browser-key');
   });
 
-  test('identified: id → external_id, name split, imageUrl/language → endpoint metadata, never properties/preferences', async () => {
+  test('identified: id → external_id, name split, imageUrl/language → subscription metadata, never properties/preferences', async () => {
     await init().registerPushSubscription({
       id: 'user-123',
       email: 'jane@example.com',
@@ -176,17 +188,14 @@ describe('registration — POST /v1/users then POST /v1/users/{id}/endpoints', (
       language: 'nl',
     });
 
-    const user = calls('POST', '/v1/users')[0].body;
+    const { subscription, metadata, ...user } = registrations()[0].body;
     expect(user).toEqual({
       external_id: 'user-123',
       email: 'jane@example.com',
       first_name: 'Jane',
       last_name: 'van der Berg',
     });
-    expect('properties' in user).toBe(false);
-    expect('preferences' in user).toBe(false);
-
-    const metadata = calls('POST', /endpoints$/)[0].body.metadata;
+    expect(subscription.endpoint).toMatch(/sub-1$/);
     expect(metadata.image_url).toBe('https://example.com/jane.png');
     expect(metadata.language).toBe('nl');
     expect(metadata.anonymous_id).toBe(env.storage['pt_anonymousId']);
@@ -218,10 +227,377 @@ describe('registration — POST /v1/users then POST /v1/users/{id}/endpoints', (
     ).toBe('{"external_id":"u"}');
   });
 
-  test('an unchanged re-register sends neither POST; a restarted worker skips them too', async () => {
+  test('no request goes to /v1/users any more, and the answer is not read', async () => {
+    env.intercept = (call) =>
+      call.path === '/v1/subscriptions' ? jsonResponse(200, {}) : undefined;
+
+    await init().registerPushSubscription();
+    await init().registerPushSubscription({ id: 'user-1', name: 'A B' });
+
+    expect(registrations().length).toBe(2);
+    expect(env.fetchCalls.filter((c) => c.path.includes('/users'))).toEqual([]);
+    expect(env.storage['pt_registration'].fingerprint).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+  });
+
+  test('`hash` is sent as `user_hash` next to an id, and never for an anonymous registration', async () => {
+    const hash = await userHash(IDENTITY_SECRET, 'user-1');
+    expect(toUserBody({ id: 'u', hash }, 'a1')).toEqual({
+      external_id: 'u',
+      user_hash: hash,
+    });
+    expect(toUserBody({ id: 7 as any, hash: ` ${hash}\n` }, 'a1')).toEqual({
+      external_id: '7',
+      user_hash: hash,
+    });
+    for (const noHash of ['', '   ', undefined, null, 42, {}]) {
+      expect(toUserBody({ id: 'u', hash: noHash as any }, 'a1')).toEqual({
+        external_id: 'u',
+      });
+    }
+    // No id: the hash proves nothing about an anonymous id.
+    expect(toUserBody({ hash }, 'a1')).toEqual({ external_id: 'anon:a1' });
+    expect(toUserBody({ id: '  ', hash, email: 'a@b.co' }, 'a1')).toEqual({
+      external_id: 'anon:a1',
+      email: 'a@b.co',
+    });
+
+    await init().registerPushSubscription({ id: 'user-1', hash });
+    await init().registerPushSubscription({ hash });
+    await init().registerPushSubscription({ id: 'user-2' });
+
+    expect(registrations().map((c) => c.body.user_hash)).toEqual([
+      hash,
+      undefined,
+      undefined,
+    ]);
+    expect('user_hash' in registrations()[1].body).toBe(false);
+    expect(registrations()[1].body.external_id).toMatch(/^anon:/);
+  });
+
+  test('a `hash` without an `id` is dropped with one console.warn per worker, which does not show it', async () => {
+    const hash = await userHash(IDENTITY_SECRET, 'user-1');
+
+    await init().registerPushSubscription({ id: 'user-1', hash });
+    await init().registerPushSubscription();
+    expect(warnings).toEqual([]);
+
+    await init().registerPushSubscription({ hash });
+    await init().registerPushSubscription({ hash, email: 'a@b.co' });
+    await init().registerPushSubscription({ id: '  ', hash, name: 'A' });
+
+    expect(warnings.length).toBe(1);
+    expect(String(warnings[0][0])).toContain('`hash`');
+    expect(JSON.stringify(warnings)).not.toContain(hash);
+    expect(registrations().filter((c) => 'user_hash' in c.body).length).toBe(1);
+
+    env.restartWorker();
+    await init().registerPushSubscription({ hash, email: 'c@d.co' });
+    expect(warnings.length).toBe(2);
+  });
+
+  test('201 (new) and 200 (already registered) both complete the registration; `expirationTime` is passed through', async () => {
+    const statuses: number[] = [];
+    const fake = (globalThis as any).fetch;
+    (globalThis as any).fetch = async (...args: unknown[]) => {
+      const response = await fake(...args);
+      if (String(args[0]).endsWith('/v1/subscriptions')) {
+        statuses.push(response.status);
+      }
+      return response;
+    };
+
+    await init().registerPushSubscription({ id: 'user-1' });
+    env.storage['pt_registration'].registeredAt -= 25 * 60 * 60 * 1000;
+    await init().registerPushSubscription({ id: 'user-1' });
+    expect(statuses).toEqual([201, 200]);
+    expect(
+      Math.abs(Date.now() - env.storage['pt_registration'].registeredAt),
+    ).toBeLessThan(5_000);
+
+    const toJSON = env.subscription.toJSON;
+    env.subscription.toJSON = () => ({ ...toJSON(), expirationTime: 1234 });
+    await init().registerPushSubscription({ id: 'user-1' });
+    expect(
+      registrations().map((c) => c.body.subscription.expirationTime),
+    ).toEqual([null, null, 1234]);
+  });
+
+  test('the hash is part of the fingerprint: a new one re-registers, the same one does not, and it is not stored', async () => {
+    const first = await userHash(IDENTITY_SECRET, 'user-1');
+    const rotated = await userHash('rotated-secret', 'user-1');
+    const register = async (user: object) => {
+      env.fetchCalls.length = 0;
+      await init().registerPushSubscription(user);
+      return registrations().map((c) => c.body.user_hash);
+    };
+
+    expect(await register({ id: 'user-1', hash: first })).toEqual([first]);
+    const fingerprint = env.storage['pt_registration'].fingerprint;
+    expect(await register({ id: 'user-1', hash: first })).toEqual([]);
+    expect(env.storage['pt_registration'].fingerprint).toBe(fingerprint);
+
+    env.identitySecret = 'rotated-secret';
+    expect(await register({ id: 'user-1', hash: rotated })).toEqual([rotated]);
+    expect(env.storage['pt_registration'].fingerprint).not.toBe(fingerprint);
+    expect(await register({ id: 'user-1', hash: rotated })).toEqual([]);
+    expect(await register({ id: 'user-1' })).toEqual([undefined]);
+
+    await register({ id: 'user-1', hash: rotated });
+    expect(JSON.stringify(env.storage)).not.toContain(rotated);
+    expect(JSON.stringify(env.storage)).not.toContain(first);
+    expect(Object.keys(env.storage).sort()).toEqual([
+      'pt_anonymousId',
+      'pt_registration',
+      'pt_vapidKey',
+    ]);
+  });
+
+  test('the hash is checked over the id as the SDK sends it: trimmed, a number as its decimal string, nothing else changed', async () => {
+    // push-api's check vector.
+    const vector =
+      '71a48035b503170a70367c1c0ee323ea2477df3d0f43241ff3451f463b87551e';
+    expect(await userHash('example-secret', 'user-123')).toBe(vector);
+
+    await init().registerPushSubscription({
+      id: ' \tuser-123\n',
+      hash: vector,
+    });
+    await init().registerPushSubscription({
+      id: 42 as any,
+      hash: await userHash(IDENTITY_SECRET, '42'),
+    });
+    // Case and inner whitespace are part of the id.
+    await init().registerPushSubscription({
+      id: 'User 123',
+      hash: (await userHash(IDENTITY_SECRET, 'User 123')).toUpperCase(),
+    });
+    expect(registrations().map((c) => c.body.external_id)).toEqual([
+      'user-123',
+      '42',
+      'User 123',
+    ]);
+
+    // A hash of the id before the SDK trimmed it, or in another case, is
+    // refused.
+    for (const hashed of [' user-9', 'USER-9']) {
+      await expect(
+        init().registerPushSubscription({
+          id: ' user-9',
+          hash: await userHash(IDENTITY_SECRET, hashed),
+        }),
+      ).rejects.toMatchObject({ status: 403, code: 'invalid_user_hash' });
+    }
+    await init().registerPushSubscription({
+      id: ' user-9',
+      hash: await userHash(IDENTITY_SECRET, 'user-9'),
+    });
+  });
+
+  const refusedThenAccepted = async (
+    code: string,
+    refused: object,
+    accepted: object,
+  ) => {
+    const error = await init()
+      .registerPushSubscription(refused)
+      .catch((e) => e);
+
+    expect(error).toBeInstanceOf(PushToApiError);
+    expect(error).toMatchObject({ status: 403, code });
+    expect(registrations().length).toBe(1); // not retried
+    expect(env.storage['pt_registration']).toBeUndefined();
+    expect(env.unsubscribeCalls).toBe(0);
+    expect(env.subscription.endpoint).toMatch(/sub-1$/);
+
+    // Not cached: the same call asks again.
+    await expect(
+      init().registerPushSubscription(refused),
+    ).rejects.toMatchObject({ code });
+    expect(registrations().length).toBe(2);
+
+    await init().registerPushSubscription(accepted);
+    expect(registrations().length).toBe(3);
+    expect(env.storage['pt_registration']).toBeDefined();
+  };
+
+  test('403 user_hash_required (verification on, id without hash): not retried, not cached, nothing unsubscribed', async () => {
+    env.identityRequired = true;
+    await refusedThenAccepted(
+      'user_hash_required',
+      { id: 'user-1' },
+      { id: 'user-1', hash: await userHash(IDENTITY_SECRET, 'user-1') },
+    );
+  });
+
+  test('403 invalid_user_hash (checked even with verification off): not retried, not cached, nothing unsubscribed', async () => {
+    await refusedThenAccepted(
+      'invalid_user_hash',
+      { id: 'user-1', hash: await userHash(IDENTITY_SECRET, 'user-2') },
+      { id: 'user-1', hash: await userHash(IDENTITY_SECRET, 'user-1') },
+    );
+  });
+
+  test('a hash sent to a tenant that never issued a secret is 403 invalid_user_hash', async () => {
+    env.identitySecret = undefined;
+    await expect(
+      init().registerPushSubscription({
+        id: 'user-1',
+        hash: await userHash(IDENTITY_SECRET, 'user-1'),
+      }),
+    ).rejects.toMatchObject({ status: 403, code: 'invalid_user_hash' });
+    await init().registerPushSubscription({ id: 'user-1' });
+  });
+
+  test('with verification on, an anonymous subscriber registers without a hash', async () => {
+    env.identityRequired = true;
+
+    await init().registerPushSubscription();
+    await init().registerPushSubscription({ email: 'a@b.co' });
+
+    expect(registrations().length).toBe(2);
+    expect(registrations().some((c) => 'user_hash' in c.body)).toBe(false);
+    expect(env.storage['pt_registration']).toBeDefined();
+  });
+
+  test('503 identity_verification_unavailable is not transient: one request, not cached; other 503s are still retried', async () => {
+    env.identityRequired = true;
+    env.signingKeyConfigured = false;
+    const user = {
+      id: 'user-1',
+      hash: await userHash(IDENTITY_SECRET, 'user-1'),
+    };
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const error = await init()
+        .registerPushSubscription(user)
+        .catch((e) => e);
+      expect(error).toBeInstanceOf(PushToApiError);
+      expect(error).toMatchObject({
+        status: 503,
+        code: 'identity_verification_unavailable',
+      });
+      expect(registrations().length).toBe(attempt);
+    }
+    expect(env.storage['pt_registration']).toBeUndefined();
+    expect(env.unsubscribeCalls).toBe(0);
+
+    // An anonymous subscriber needs no check, so it still registers.
+    await init().registerPushSubscription();
+    expect(env.storage['pt_registration']).toBeDefined();
+
+    env.signingKeyConfigured = true;
+    env.fetchCalls.length = 0;
+    let busy = 2;
+    env.intercept = (call) =>
+      call.path === '/v1/subscriptions' && busy-- > 0
+        ? jsonResponse(503, { error: { code: 'busy', message: 'try again' } })
+        : undefined;
+    await init().registerPushSubscription(user);
+    expect(registrations().length).toBe(3);
+  });
+
+  test('409 endpoint_conflict: the subscription is replaced once and the new one is registered', async () => {
+    env.intercept = (call) =>
+      call.path === '/v1/subscriptions' &&
+      call.body.subscription.endpoint.endsWith('sub-1')
+        ? conflict()
+        : undefined;
+
+    await init().registerPushSubscription({ id: 'user-1' });
+
+    expect(env.unsubscribeCalls).toBe(1);
+    expect(env.subscribeCalls.length).toBe(2);
+    expect(env.subscription.endpoint).toMatch(/sub-2$/);
+    expect(registrations().map((c) => c.body.subscription)).toEqual([
+      {
+        endpoint: 'https://fcm.googleapis.com/fcm/send/sub-1',
+        expirationTime: null,
+        keys: { p256dh: 'p256dh-1', auth: 'auth-1' },
+      },
+      {
+        endpoint: 'https://fcm.googleapis.com/fcm/send/sub-2',
+        expirationTime: null,
+        keys: { p256dh: 'p256dh-2', auth: 'auth-2' },
+      },
+    ]);
+    expect(calls('GET', '/v1/vapid-key').length).toBe(1);
+
+    // What is remembered is the registration that went through.
+    env.fetchCalls.length = 0;
+    await init().registerPushSubscription({ id: 'user-1' });
+    expect(env.fetchCalls.length).toBe(0);
+    expect(env.unsubscribeCalls).toBe(1);
+  });
+
+  test('409 recovery is bounded: a second conflict is thrown, with one resubscribe and nothing cached', async () => {
+    env.intercept = (call) =>
+      call.path === '/v1/subscriptions' ? conflict() : undefined;
+
+    const error = await init()
+      .registerPushSubscription()
+      .catch((e) => e);
+
+    expect(error).toBeInstanceOf(PushToApiError);
+    expect(error).toMatchObject({ status: 409, code: 'endpoint_conflict' });
+    expect(registrations().length).toBe(2);
+    expect(env.unsubscribeCalls).toBe(1);
+    expect(env.subscribeCalls.length).toBe(2);
+    expect(env.storage['pt_registration']).toBeUndefined();
+  });
+
+  test('409 recovery: another error on the retry is thrown as it is; another 409 code is not recovered', async () => {
+    env.intercept = (call) =>
+      call.path !== '/v1/subscriptions'
+        ? undefined
+        : call.body.subscription.endpoint.endsWith('sub-1')
+          ? conflict()
+          : jsonResponse(422, {
+              error: { code: 'endpoint_limit_reached', message: 'at most 20' },
+            });
+    await expect(init().registerPushSubscription()).rejects.toMatchObject({
+      status: 422,
+      code: 'endpoint_limit_reached',
+    });
+    expect(registrations().length).toBe(2);
+    expect(env.unsubscribeCalls).toBe(1);
+
+    env.fetchCalls.length = 0;
+    env.intercept = (call) =>
+      call.path === '/v1/subscriptions'
+        ? jsonResponse(409, { error: { code: 'conflict', message: 'other' } })
+        : undefined;
+    await expect(init().registerPushSubscription()).rejects.toMatchObject({
+      status: 409,
+      code: 'conflict',
+    });
+    expect(registrations().length).toBe(1);
+    expect(env.unsubscribeCalls).toBe(1);
+  });
+
+  test('409 recovery: if the browser hands back the same subscription, the conflict is thrown without a second request', async () => {
+    await init().registerPushSubscription();
+    env.subscription.unsubscribe = async () => {
+      env.unsubscribeCalls++;
+      return false;
+    };
+    env.intercept = (call) =>
+      call.path === '/v1/subscriptions' ? conflict() : undefined;
+    env.fetchCalls.length = 0;
+
+    await expect(
+      init().registerPushSubscription({ id: 'user-1' }),
+    ).rejects.toMatchObject({ code: 'endpoint_conflict' });
+
+    expect(registrations().length).toBe(1);
+    expect(env.unsubscribeCalls).toBe(1);
+  });
+
+  test('an unchanged re-register sends no POST; a restarted worker skips it too', async () => {
     const user = { id: 'user-1', email: 'a@b.co' };
     await init().registerPushSubscription(user);
-    expect(calls('POST', /./).length).toBe(2);
+    expect(calls('POST', /./).length).toBe(1);
 
     env.fetchCalls.length = 0;
     await init().registerPushSubscription(user);
@@ -244,13 +620,13 @@ describe('registration — POST /v1/users then POST /v1/users/{id}/endpoints', (
     expect(env.fetchCalls.length).toBe(0);
   });
 
-  test('a change in the user, the identity, the subscription, the base URL or the key re-sends both calls', async () => {
+  test('a change in the user, the identity, the subscription, the base URL or the key re-sends the call', async () => {
     const reRegisters = async (sdk: PushNotifications, user?: object) => {
       env.fetchCalls.length = 0;
       await sdk.registerPushSubscription(user);
       return calls('POST', /./).map((c) => c.path);
     };
-    const both = ['/v1/users', '/v1/users/42/endpoints'];
+    const both = ['/v1/subscriptions'];
 
     await init().registerPushSubscription({ id: 'user-1', name: 'A B' });
 
@@ -284,14 +660,14 @@ describe('registration — POST /v1/users then POST /v1/users/{id}/endpoints', (
         init({ apiBaseUrl: 'https://elsewhere.test', apiKey: 'another-key' }),
       ),
     ).toEqual(both);
-    expect(calls('POST', /endpoints$/)[0].body.endpoint).toBe(
+    expect(registrations()[0].body.subscription.endpoint).toBe(
       'https://fcm.googleapis.com/fcm/send/sub-2',
     );
   });
 
-  test('a failed registration is not cached: the next call sends both again', async () => {
+  test('a failed registration is not cached: the next call sends it again', async () => {
     env.intercept = (call) =>
-      call.path.endsWith('/endpoints')
+      call.path === '/v1/subscriptions'
         ? jsonResponse(422, {
             error: { code: 'endpoint_limit_reached', message: 'at most 20' },
           })
@@ -304,7 +680,7 @@ describe('registration — POST /v1/users then POST /v1/users/{id}/endpoints', (
     env.intercept = undefined;
     env.fetchCalls.length = 0;
     await init().registerPushSubscription();
-    expect(calls('POST', /./).length).toBe(2);
+    expect(calls('POST', /./).length).toBe(1);
   });
 
   test('throws outside a registered service worker', async () => {
@@ -349,7 +725,7 @@ describe('VAPID key', () => {
     expect(
       new Uint8Array(env.subscription.options.applicationServerKey)[1],
     ).toBe(2);
-    expect(calls('POST', /endpoints$/)[0].body.endpoint).toMatch(/sub-2$/);
+    expect(registrations()[0].body.subscription.endpoint).toMatch(/sub-2$/);
   });
 
   test('a subscription that does not expose its key is reused if subscribe() accepts it, replaced if not', async () => {
@@ -399,6 +775,15 @@ describe('VAPID key', () => {
 
 describe('fetch wrapper', () => {
   const api = () => new ApiClient('k', `${API_BASE_URL}/v1`);
+  const body = (email?: string) => ({
+    external_id: 'u',
+    ...(email ? { email } : {}),
+    subscription: {
+      endpoint: 'https://fcm.googleapis.com/fcm/send/x',
+      keys: { p256dh: 'p', auth: 'a' },
+    },
+    metadata: { channel: 'extension' },
+  });
 
   test('the push-api error envelope becomes a PushToApiError with status, code, message and details', async () => {
     env.intercept = () =>
@@ -411,7 +796,7 @@ describe('fetch wrapper', () => {
       });
 
     const error = await api()
-      .upsertUser({ external_id: 'u', email: 'nope' })
+      .registerSubscription(body('nope'))
       .catch((e) => e);
 
     expect(error).toBeInstanceOf(PushToApiError);
@@ -472,14 +857,10 @@ describe('fetch wrapper', () => {
           })
         : undefined;
 
-    expect(await api().upsertUser({ external_id: 'u' })).toBe(42);
+    await api().registerSubscription(body());
     expect(env.fetchCalls.length).toBe(3);
     // The retried POST carries the same body.
-    expect(env.fetchCalls.map((c) => c.body)).toEqual([
-      { external_id: 'u' },
-      { external_id: 'u' },
-      { external_id: 'u' },
-    ]);
+    expect(env.fetchCalls.map((c) => c.body)).toEqual([body(), body(), body()]);
   });
 
   test('a network error is retried, then succeeds', async () => {

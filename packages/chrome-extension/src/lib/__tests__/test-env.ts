@@ -12,6 +12,7 @@ import { NotificationsState } from '../notifications-state';
 import { PushNotificationEvents } from '../push-notification-events';
 import { PushNotificationStorage } from '../push-notification-storage';
 import { ReceiveNotification } from '../receive-notification';
+import { RegisterSubscription } from '../register-subscription';
 
 type Listener = (...args: any[]) => any;
 
@@ -38,6 +39,27 @@ export function jsonResponse(status: number, body: unknown) {
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+/** `user_hash` as the integrator's server computes it. */
+export async function userHash(secret: string, externalId: string) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const mac = await crypto.subtle.sign('HMAC', key, encoder.encode(externalId));
+  return Array.from(new Uint8Array(mac), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+}
+
+export const IDENTITY_SECRET = 'example-secret';
+
+const SDK_ANONYMOUS_ID =
+  /^anon:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -81,6 +103,12 @@ export function installMocks() {
           call: FetchCall,
         ) => Response | undefined | Promise<Response | undefined>),
     serverVapidKey: vapidKey(1),
+    /** The tenant's identity secret; `undefined` is "none was ever issued". */
+    identitySecret: IDENTITY_SECRET as string | undefined,
+    /** The tenant's `required` switch. */
+    identityRequired: false,
+    /** False models a deployment without `PUSH_API_SIGNING_KEY`. */
+    signingKeyConfigured: true,
     userId: 42,
     badgeTextCalls: [] as string[],
     badgeColorCalls: [] as string[],
@@ -155,8 +183,60 @@ export function installMocks() {
   };
 
   let subscriptionCounter = 0;
+  const registered = new Set<string>();
   const sameKey = (a: ArrayBuffer, b: Uint8Array) =>
     base64Url(new Uint8Array(a)) === base64Url(b);
+
+  /** push-api's identity check on `POST /v1/subscriptions`. */
+  const checkProof = async (body: any) => {
+    const hash = body?.user_hash;
+    const externalId = String(body?.external_id);
+    if (hash !== undefined && typeof hash !== 'string') {
+      return jsonResponse(422, {
+        error: {
+          code: 'validation_error',
+          message: 'user_hash must be a string',
+        },
+      });
+    }
+    const needsProof =
+      env.identityRequired && !SDK_ANONYMOUS_ID.test(externalId);
+    if (
+      !env.signingKeyConfigured &&
+      (needsProof || (hash !== undefined && env.identitySecret !== undefined))
+    ) {
+      return jsonResponse(503, {
+        error: {
+          code: 'identity_verification_unavailable',
+          message:
+            'identity verification is not configured on this deployment: PUSH_API_SIGNING_KEY is not set',
+        },
+      });
+    }
+    if (hash !== undefined) {
+      // Over the exact string received: no trim, no case fold.
+      const valid =
+        env.identitySecret !== undefined &&
+        hash.toLowerCase() === (await userHash(env.identitySecret, externalId));
+      return valid
+        ? undefined
+        : jsonResponse(403, {
+            error: {
+              code: 'invalid_user_hash',
+              message: 'user_hash is not valid for this external_id',
+            },
+          });
+    }
+    return needsProof
+      ? jsonResponse(403, {
+          error: {
+            code: 'user_hash_required',
+            message:
+              'this tenant requires identity verification: send the user_hash for this external_id',
+          },
+        })
+      : undefined;
+  };
 
   (globalThis as any).fetch = async (url: string, init: any = {}) => {
     const call: FetchCall = {
@@ -177,14 +257,25 @@ export function installMocks() {
     if (call.method === 'GET' && call.path === '/v1/vapid-key') {
       return jsonResponse(200, { public_key: env.serverVapidKey });
     }
-    if (call.method === 'POST' && call.path === '/v1/users') {
-      return jsonResponse(201, { id: env.userId, ...call.body });
+    if (call.method === 'POST' && call.path === '/v1/subscriptions') {
+      const refused = await checkProof(call.body);
+      if (refused) {
+        return refused;
+      }
+      // 201 for a new address of this user, 200 for one it already had.
+      const key = `${call.body?.external_id} ${call.body?.subscription?.endpoint}`;
+      const status = registered.has(key) ? 200 : 201;
+      registered.add(key);
+      return jsonResponse(status, { user_id: env.userId, endpoint_id: 7 });
     }
-    if (
-      call.method === 'POST' &&
-      /^\/v1\/users\/\d+\/endpoints$/.test(call.path)
-    ) {
-      return jsonResponse(201, { id: 7, channel: 'web_push' });
+    // A browser key no longer reaches the id-based routes.
+    if (call.method === 'POST' && /^\/v1\/users(\/|$)/.test(call.path)) {
+      return jsonResponse(403, {
+        error: {
+          code: 'insufficient_permissions',
+          message: 'this API key cannot call this route',
+        },
+      });
     }
     if (call.method === 'POST' && call.path === '/v1/feedback') {
       return jsonResponse(202, { accepted: true });
@@ -346,4 +437,5 @@ export function resetSingletons() {
   ApiClient.retryBaseDelayMs = 1;
   ApiClient.timeoutMs = 10_000;
   (PushNotificationStorage as any).anonymousId = undefined;
+  (RegisterSubscription as any).warnedHashWithoutId = false;
 }

@@ -1,36 +1,48 @@
 declare let self: ServiceWorkerGlobalScope;
 
-import { ApiClient } from './api-client';
+import { ApiClient, PushToApiError } from './api-client';
 import { SDK_VERSION } from './constants';
 import { PushNotificationStorage } from './push-notification-storage';
-import { RegisterEndpointBody, UpsertUserBody, User } from './types';
+import {
+  RegisterSubscriptionBody,
+  SubscriptionUserFields,
+  User,
+} from './types';
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 /**
- * The `POST /v1/users` body for a `User`.
+ * The user part of the `POST /v1/subscriptions` body for a `User`.
  *
- * `external_id` is always sent, because without one push-api inserts a new
- * user on every call: an anonymous subscriber gets `anon:<anonymousId>`.
- * `name` is split on its first run of whitespace. Absent and empty fields are
- * left out (push-api refuses `""`), and `properties` / `preferences` are
- * never sent: push-api replaces them wholesale.
+ * `external_id` is always sent, because push-api finds or creates the user by
+ * it: an anonymous subscriber gets `anon:<anonymousId>`. A string `id` is sent
+ * with its surrounding whitespace removed (`String.prototype.trim`) and
+ * otherwise untouched; a finite number as its decimal string. push-api checks
+ * `user_hash` against exactly that string. `user_hash` is sent
+ * only next to an identified id: an anonymous id needs no proof. `name` is
+ * split on its first run of whitespace. Absent and empty fields are left out
+ * (push-api refuses `""`), and `properties` / `preferences` are never sent.
  */
 export function toUserBody(
   user: User | undefined,
   anonymousId: string,
-): UpsertUserBody {
+): SubscriptionUserFields {
   // A JS caller may pass a numeric id; that is still an identity.
   const rawId: unknown = user?.id;
   const id =
     typeof rawId === 'number' && Number.isFinite(rawId)
       ? String(rawId)
       : text(rawId);
-  const body: UpsertUserBody = {
+  const body: SubscriptionUserFields = {
     external_id: id ?? `anon:${anonymousId}`,
   };
+
+  const hash = id === undefined ? undefined : text(user?.hash);
+  if (hash) {
+    body.user_hash = hash;
+  }
 
   const email = text(user?.email);
   if (email) {
@@ -98,7 +110,18 @@ function isFresh(timestamp: number, now: number) {
   return age >= 0 && age < REGISTRATION_MAX_AGE_MS;
 }
 
+function isEndpointConflict(error: unknown) {
+  return (
+    error instanceof PushToApiError &&
+    error.status === 409 &&
+    error.code === 'endpoint_conflict'
+  );
+}
+
 export class RegisterSubscription {
+  /** Per worker: the warning for a `hash` without an `id` is logged once. */
+  private static warnedHashWithoutId = false;
+
   constructor(
     private readonly api: ApiClient,
     private readonly apiKey: string,
@@ -106,12 +129,12 @@ export class RegisterSubscription {
   ) {}
 
   /**
-   * Registers this browser with push-api: `POST /v1/users`, then
-   * `POST /v1/users/{id}/endpoints`.
+   * Registers this browser with push-api: one `POST /v1/subscriptions`, which
+   * finds or creates the user and registers the push subscription for it.
    *
-   * Both calls are skipped when nothing they would send has changed since the
-   * last successful registration and that one is under 24 hours old, so this
-   * is cheap to call on every service-worker start: no request at all then.
+   * The call is skipped when nothing it would send has changed since the last
+   * successful registration and that one is under 24 hours old, so this is
+   * cheap to call on every service-worker start: no request at all then.
    */
   public async registerPushSubscription(currentUrl: string, user?: User) {
     // Check if Service Worker is available
@@ -141,14 +164,14 @@ export class RegisterSubscription {
       existing,
       vapid.key,
     );
-    let bodies = await this.buildBodies(
+    let request = await this.buildRequest(
       subscription,
       currentUrl,
       anonymousId,
       user,
     );
 
-    if (registrationIsFresh && previous.fingerprint === bodies.fingerprint) {
+    if (registrationIsFresh && previous.fingerprint === request.fingerprint) {
       return;
     }
 
@@ -162,7 +185,7 @@ export class RegisterSubscription {
           subscription,
           vapid.key,
         );
-        bodies = await this.buildBodies(
+        request = await this.buildRequest(
           subscription,
           currentUrl,
           anonymousId,
@@ -171,10 +194,32 @@ export class RegisterSubscription {
       }
     }
 
-    const userId = await this.api.upsertUser(bodies.user);
-    await this.api.registerEndpoint(userId, bodies.endpoint);
+    try {
+      await this.api.registerSubscription(request.body);
+    } catch (error) {
+      if (!isEndpointConflict(error)) {
+        throw error;
+      }
+      // push-api holds this address with other keys, for this user or for
+      // another one, which this browser's own registrations cannot cause.
+      // The address is unusable here, so it is replaced, once: a second
+      // refusal (of any kind) is the caller's.
+      const refusedEndpoint = subscription.endpoint;
+      await subscription.unsubscribe();
+      subscription = await this.subscribePush(registration, null, vapid.key);
+      if (subscription.endpoint === refusedEndpoint) {
+        throw error;
+      }
+      request = await this.buildRequest(
+        subscription,
+        currentUrl,
+        anonymousId,
+        user,
+      );
+      await this.api.registerSubscription(request.body);
+    }
     await PushNotificationStorage.setRegistration({
-      fingerprint: bodies.fingerprint,
+      fingerprint: request.fingerprint,
       registeredAt: now,
     });
   }
@@ -208,18 +253,29 @@ export class RegisterSubscription {
     return { key, fromCache: false };
   }
 
-  private async buildBodies(
+  private async buildRequest(
     pushSubscription: PushSubscription,
     currentUrl: string,
     anonymousId: string,
     user?: User,
   ) {
-    const { endpoint, keys } = pushSubscription.toJSON();
+    const { endpoint, expirationTime, keys } = pushSubscription.toJSON();
     if (!endpoint || !keys?.p256dh || !keys?.auth) {
       throw new Error('The push subscription has no endpoint or keys');
     }
 
-    const userBody = toUserBody(user, anonymousId);
+    const userFields = toUserBody(user, anonymousId);
+    if (
+      text(user?.hash) &&
+      !userFields.user_hash &&
+      !RegisterSubscription.warnedHashWithoutId
+    ) {
+      RegisterSubscription.warnedHashWithoutId = true;
+      // The value itself is never logged.
+      console.warn(
+        'PushNotifications: `hash` was passed without an `id` and is not sent. An anonymous subscriber needs no hash; pass the `id` the hash was computed for.',
+      );
+    }
 
     const metadata: Record<string, string> = {
       channel: 'extension',
@@ -240,18 +296,23 @@ export class RegisterSubscription {
       }
     }
 
-    const endpointBody: RegisterEndpointBody = {
-      endpoint,
-      keys: { p256dh: keys.p256dh, auth: keys.auth },
+    const body: RegisterSubscriptionBody = {
+      ...userFields,
+      subscription: {
+        endpoint,
+        expirationTime: expirationTime ?? null,
+        keys: { p256dh: keys.p256dh, auth: keys.auth },
+      },
       metadata,
     };
 
-    // The key is part of it because another key can be another tenant. Only
-    // the hash is stored.
+    // The key is part of it because another key can be another tenant, and
+    // `user_hash` because a new proof has to be presented. Only the hash of
+    // all of it is stored.
     const fingerprint = await sha256Hex(
-      JSON.stringify([this.api.baseUrl, this.apiKey, userBody, endpointBody]),
+      JSON.stringify([this.api.baseUrl, this.apiKey, body]),
     );
-    return { user: userBody, endpoint: endpointBody, fingerprint };
+    return { body, fingerprint };
   }
 
   /**

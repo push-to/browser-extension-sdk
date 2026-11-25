@@ -1,5 +1,5 @@
 import { API_VERSION_PATH, CORE_URL } from './constants';
-import { FeedbackEvent, RegisterEndpointBody, UpsertUserBody } from './types';
+import { FeedbackEvent, RegisterSubscriptionBody } from './types';
 
 /**
  * A failed push-api call. `code`, `message` and `details` come from the
@@ -114,9 +114,18 @@ async function toApiError(response: Response): Promise<PushToApiError> {
   });
 }
 
+/**
+ * `503` codes that trying again cannot fix. `identity_verification_unavailable`:
+ * the deployment has no signing key, so it cannot check a `user_hash`.
+ */
+const NOT_TRANSIENT_503 = new Set(['identity_verification_unavailable']);
+
 /** Every call the SDK makes to push-api goes through {@link request}. */
 export class ApiClient {
-  /** Retries after the first attempt, on a network error or a `503` only. */
+  /**
+   * Retries after the first attempt, on a network error or a `503` only, and
+   * not on a `503` in {@link NOT_TRANSIENT_503}.
+   */
   public static maxRetries = 2;
   /** Doubles on each retry. */
   public static retryBaseDelayMs = 300;
@@ -147,28 +156,15 @@ export class ApiClient {
     return body.public_key;
   }
 
-  /** Returns the push-api user id. */
-  public async upsertUser(user: UpsertUserBody): Promise<number> {
-    const body = await this.request<{ id?: unknown }>('POST', '/users', {
-      body: user,
-    });
-    if (typeof body?.id !== 'number') {
-      throw new PushToApiError({
-        status: 200,
-        code: 'invalid_response',
-        message: 'POST /users answered without a numeric id',
-      });
-    }
-    return body.id;
-  }
-
-  public async registerEndpoint(
-    userId: number,
-    endpoint: RegisterEndpointBody,
+  /**
+   * Finds or creates the user by `external_id` and registers the push
+   * subscription for it, in one call. The answer is not read: nothing the SDK
+   * does depends on the ids in it.
+   */
+  public async registerSubscription(
+    body: RegisterSubscriptionBody,
   ): Promise<void> {
-    await this.request('POST', `/users/${userId}/endpoints`, {
-      body: endpoint,
-    });
+    await this.request('POST', '/subscriptions', { body });
   }
 
   /**
@@ -230,7 +226,7 @@ export class ApiClient {
       }
 
       const error = await toApiError(response);
-      if (response.status !== 503) {
+      if (response.status !== 503 || NOT_TRANSIENT_503.has(error.code)) {
         throw error;
       }
       lastError = error;

@@ -45,17 +45,19 @@ icon wins over it). **Do not commit that change.**
 3. Expect `[PT-Q5] registerPushSubscription OK` in the console and, in the
    Network tab, in this order:
    - `GET  $PUSH_API_URL/v1/vapid-key` → `200`
-   - `POST $PUSH_API_URL/v1/users` → `201` (body: `external_id: "anon:<uuid>"`
-     and the harness's `email`)
-   - `POST $PUSH_API_URL/v1/users/<id>/endpoints` → `201` (body: `endpoint`,
-     `keys`, `metadata.channel: "extension"`)
+   - `POST $PUSH_API_URL/v1/subscriptions` → `201` (`200` if this user already
+     had the subscription). Body: `external_id: "anon:<uuid>"`, the harness's
+     `email`, `subscription: { endpoint, expirationTime, keys }` and
+     `metadata.channel: "extension"`; no `user_hash`.
+
+   There must be **no** request to `/v1/users` or `/v1/users/<id>/endpoints`:
+   a browser key gets `403 insufficient_permissions` there.
 
    This proves `pushManager.subscribe()` works in an MV3 background worker with
    only the `notifications` / `alarms` / `storage` permissions, and that
    push-api's CORS lets the worker call it with no `host_permissions`.
-4. Read the push-api user id, which the sends below need: it is the `id` in
-   the response of `POST /v1/users` (Network tab → Response), and the number
-   in the path of the endpoints call.
+4. Read the push-api user id, which the sends below need: it is the `user_id`
+   in the response of `POST /v1/subscriptions` (Network tab → Response).
 
    ```sh
    export PUSHTO_USER_ID=<that number>
@@ -65,7 +67,7 @@ icon wins over it). **Do not commit that change.**
    Network tab shows **no request at all**: the registration and the VAPID key
    are both remembered for 24 hours.
 6. **It expires.** In the service worker console, age the stored registration,
-   then reload the extension: all three requests of step 3 are sent again.
+   then reload the extension: both requests of step 3 are sent again.
 
    ```js
    const { pt_registration } = await chrome.storage.local.get('pt_registration');
@@ -73,6 +75,20 @@ icon wins over it). **Do not commit that change.**
      pt_registration: { ...pt_registration, registeredAt: Date.now() - 25 * 3600e3 },
    });
    ```
+
+7. **Identity (optional).** In `background.js`, pass
+   `{ id: 'q5-user', email: ... }` to `registerPushSubscription` and reload:
+   one `POST /v1/subscriptions` with `external_id: "q5-user"` and a different
+   `user_id` in the response (use that one for the sends below). Add
+   the real `hash` for that id (computed with the tenant's identity secret,
+   on your machine, never in the extension) and reload again: the same
+   request with `user_hash`, still `2xx`. Change one digit of the hash and
+   reload: `403 invalid_user_hash`, exactly one request (no retry), logged by
+   the harness as a failed registration and sent again on the next reload
+   (nothing is cached). If the tenant has no identity secret yet, any hash
+   answers that `403`.
+   Remove the `User` argument and reload: the subscription moves back to the
+   `anon:<uuid>` user.
 
 ## 2. Killing the service worker
 
