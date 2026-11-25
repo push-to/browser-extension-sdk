@@ -1,5 +1,4 @@
 import { PushNotificationEvents } from './push-notification-events';
-import { AutoDismissOptions } from './types';
 
 const ALARM_PREFIX = 'pt-dismiss:';
 
@@ -21,11 +20,12 @@ const MIN_ALARM_DELAY_MS = 30_000;
  * listener must be registered at top-level SW startup — this class exposes
  * {@link registerListeners} for `ReceiveNotification` to call during
  * initialization.
+ *
+ * An auto-dismiss reports no feedback: the user did nothing.
  */
 export class Dismiss {
   private static dismiss: Dismiss;
   private shortTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private apiKey?: string;
   private listenersRegistered = false;
 
   private constructor() {}
@@ -42,9 +42,7 @@ export class Dismiss {
    * startup so a worker re-woken by an alarm it never scheduled still handles
    * it. Idempotent — the listeners are added at most once per worker instance.
    */
-  public registerListeners(apiKey: string) {
-    this.apiKey = apiKey;
-
+  public registerListeners() {
     if (this.listenersRegistered) {
       return;
     }
@@ -54,52 +52,41 @@ export class Dismiss {
       if (!alarm.name.startsWith(ALARM_PREFIX)) {
         return;
       }
-      const correlationId = alarm.name.slice(ALARM_PREFIX.length);
-      void this.fireDismissIfPresent(correlationId);
+      const notificationId = alarm.name.slice(ALARM_PREFIX.length);
+      this.fireDismissIfPresent(notificationId).catch(logFailure);
     });
 
     // When a notification is closed/clicked before its dismiss time, cancel the
     // pending alarm so it doesn't needlessly re-wake the worker later.
     chrome.notifications.onClosed.addListener((notificationId) => {
-      void this.handleNotificationClose(notificationId);
+      this.handleNotificationClose(notificationId).catch(logFailure);
     });
   }
 
-  public async handleTimedAutoDismiss(
-    apiKey: string,
-    correlationId: string,
-    autoDismissOptions: AutoDismissOptions,
-  ) {
-    if (autoDismissOptions?.behavior !== 'timed') {
-      return;
-    }
-
-    this.apiKey = apiKey;
-    const delayMs = autoDismissOptions.dismissTimeMS;
-
+  public async handleTimedAutoDismiss(notificationId: string, delayMs: number) {
     // Durable backstop: survives worker termination. Sub-30s delays are clamped
     // by Chrome, so schedule at the floor and let the setTimeout below handle
     // the precise short-delay case while the worker is alive.
-    await chrome.alarms.create(ALARM_PREFIX + correlationId, {
+    await chrome.alarms.create(ALARM_PREFIX + notificationId, {
       delayInMinutes: Math.max(delayMs, MIN_ALARM_DELAY_MS) / 60_000,
     });
 
     if (delayMs < MIN_ALARM_DELAY_MS) {
       const timer = setTimeout(() => {
-        this.shortTimers.delete(correlationId);
-        void this.fireDismissIfPresent(correlationId);
+        this.shortTimers.delete(notificationId);
+        this.fireDismissIfPresent(notificationId).catch(logFailure);
       }, delayMs);
-      this.shortTimers.set(correlationId, timer);
+      this.shortTimers.set(notificationId, timer);
     }
   }
 
-  public async handleNotificationClose(correlationId: string) {
-    await chrome.alarms.clear(ALARM_PREFIX + correlationId);
+  public async handleNotificationClose(notificationId: string) {
+    await chrome.alarms.clear(ALARM_PREFIX + notificationId);
 
-    const timer = this.shortTimers.get(correlationId);
+    const timer = this.shortTimers.get(notificationId);
     if (timer) {
       clearTimeout(timer);
-      this.shortTimers.delete(correlationId);
+      this.shortTimers.delete(notificationId);
     }
   }
 
@@ -109,17 +96,15 @@ export class Dismiss {
    * dismisses and clears the notification; a later firing finds it gone and
    * no-ops. Scheduling artifacts are always cleaned up.
    */
-  private async fireDismissIfPresent(correlationId: string) {
+  private async fireDismissIfPresent(notificationId: string) {
     const isPresent = (await this.getActiveNotificationIds()).includes(
-      correlationId,
+      notificationId,
     );
 
-    await this.handleNotificationClose(correlationId);
+    await this.handleNotificationClose(notificationId);
 
-    if (isPresent && this.apiKey) {
-      PushNotificationEvents.getInstance(this.apiKey).handleAutoDismissed(
-        correlationId,
-      );
+    if (isPresent) {
+      await PushNotificationEvents.instance.dismissSilently(notificationId);
     }
   }
 
@@ -130,4 +115,8 @@ export class Dismiss {
       });
     });
   }
+}
+
+function logFailure(error: unknown) {
+  console.warn('[PushTo] auto-dismiss failed', error);
 }

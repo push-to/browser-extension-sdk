@@ -1,116 +1,210 @@
-import { CORE_URL } from './constants';
+import { ApiClient } from './api-client';
 import { NotificationsState } from './notifications-state';
-import { PushNotificationStatus } from './types';
+import { FeedbackEventType, NormalizedNotification } from './types';
 
+/**
+ * Reports what happens to a notification to `POST /v1/feedback`:
+ *
+ * - shown → `delivered`
+ * - clicked → `clicked`, then `opened` once the tab for its URL exists
+ * - closed by the user (`byUser`) → `dismissed`
+ * - closed by the system, timed auto-dismiss, or replaced by one with the
+ *   same tag → nothing
+ *
+ * A legacy notification (no push-api id) is never reported.
+ */
 export class PushNotificationEvents {
   private static pushNotificationEvents: PushNotificationEvents;
-  private trackNotificationUrl: string = CORE_URL + '/notifications/track';
+  private api?: ApiClient;
 
-  // Ids we clear programmatically (click / auto-dismiss). chrome.notifications
-  // .clear() fires onClosed, which would otherwise send a trailing CLOSED that
-  // overwrites the CLICKED/AUTO_DISMISSED row (core's track is last-write-wins
-  // on the same id). We record the id before clearing and suppress that one
-  // CLOSED. In-memory is safe: clear() and its onClosed dispatch happen in the
-  // same worker instance. Genuine user-closes are never in the set → still
-  // tracked as CLOSED.
+  // Ids we clear programmatically (click / auto-dismiss / tag replacement).
+  // chrome.notifications.clear() fires onClosed, which would otherwise report
+  // a `dismissed` for a notification the user clicked or never closed. We
+  // record the id before clearing and suppress that one onClosed. In-memory
+  // is safe: clear() and its onClosed dispatch happen in the same worker
+  // instance; `dismissSilently` covers the case where it does not. Genuine
+  // user-closes are never in the set → still reported.
   private programmaticallyCleared = new Set<string>();
 
-  constructor(private readonly apiKey: string) {}
+  private constructor() {}
 
-  public static getInstance(apiKey: string) {
+  /**
+   * The first access registers the `chrome.notifications` listeners, so it
+   * must happen at top-level service-worker startup. Later accesses add none.
+   */
+  public static get instance() {
     if (!this.pushNotificationEvents) {
-      this.pushNotificationEvents = new PushNotificationEvents(apiKey);
-
+      this.pushNotificationEvents = new PushNotificationEvents();
       this.pushNotificationEvents.listenForPushNotificationEvents();
     }
-
     return this.pushNotificationEvents;
   }
 
-  public handleDisplayed(notificationId: string) {
-    this.sendTrackNotificationEvent(
-      notificationId,
-      PushNotificationStatus.DELIVERED,
-    );
+  /** Re-initialising the SDK swaps the client; the listeners stay as they are. */
+  public configure(api: ApiClient) {
+    this.api = api;
   }
 
-  public handleAutoDismissed(notificationId: string) {
-    this.sendTrackNotificationEvent(
-      notificationId,
-      PushNotificationStatus.AUTO_DISMISSED,
-    );
+  /** Resolves when the post is done. Never rejects. */
+  public handleDisplayed(notification: NormalizedNotification): Promise<void> {
+    return this.sendFeedback(notification.notificationId, 'delivered');
+  }
 
+  /**
+   * Takes a notification off the screen without reporting anything. For a
+   * notification whose stored entry is already gone (tag replacement);
+   * otherwise use {@link dismissSilently}.
+   */
+  public clearSilently(notificationId: string) {
+    // Never dropped here, even when nothing was on screen: an onClosed that
+    // is already on its way must still find the id.
     this.programmaticallyCleared.add(notificationId);
-    chrome.notifications.clear(notificationId);
+    try {
+      chrome.notifications.clear(notificationId);
+    } catch (error) {
+      console.warn('[PushTo] could not clear notification', error);
+    }
+  }
+
+  /**
+   * {@link clearSilently}, after removing the stored entry. The set above
+   * lives in memory: if the worker dies between clear() and its onClosed, the
+   * fresh worker has an empty set, and the missing entry is what keeps it
+   * from reporting a `dismissed`.
+   */
+  public async dismissSilently(notificationId: string) {
+    this.programmaticallyCleared.add(notificationId);
+    await this.forget(notificationId);
+    this.clearSilently(notificationId);
+  }
+
+  private async forget(notificationId: string) {
+    try {
+      await NotificationsState.instance.removeNotification(notificationId);
+    } catch (error) {
+      console.warn('[PushTo] could not remove notification state', error);
+    }
   }
 
   private async handleNotificationClick(notificationId: string) {
-    // Read persisted state BEFORE clearing: clear() triggers onClosed, which
-    // removes the entry from chrome.storage.local. Reading first guarantees the
-    // link/badge metadata is available even if the removal wins the race.
-    const notification =
-      await NotificationsState.instance.getNotification(notificationId);
-
-    this.sendTrackNotificationEvent(
-      notificationId,
-      PushNotificationStatus.CLICKED,
-    );
-
+    // Before the first await: some platforms close a notification when it is
+    // clicked, and that onClosed must not be taken for a dismissal.
     this.programmaticallyCleared.add(notificationId);
-    chrome.notifications.clear(notificationId);
 
-    if (notification?.options?.data?.link) {
-      chrome.tabs.create({ url: notification.options.data.link });
+    // Read persisted state BEFORE removing and clearing it. The entry is in
+    // chrome.storage.local, so a worker started by this very click finds it.
+    let notification: NormalizedNotification | undefined;
+    try {
+      notification =
+        await NotificationsState.instance.getNotification(notificationId);
+    } catch (error) {
+      console.warn('[PushTo] could not read notification state', error);
     }
 
-    if (notification?.options?.data?.badge) {
-      chrome.action.setBadgeText({ text: '' });
+    const clicked = this.sendFeedback(notification?.notificationId, 'clicked');
+
+    await this.dismissSilently(notificationId);
+
+    if (notification?.badge) {
+      clearBadge();
     }
+
+    let opened: Promise<void> | undefined;
+    if (notification?.url) {
+      try {
+        await chrome.tabs.create({ url: notification.url });
+        opened = this.sendFeedback(notification.notificationId, 'opened');
+      } catch (error) {
+        console.warn('[PushTo] could not open the notification url', error);
+      }
+    }
+
+    await Promise.all([clicked, opened]);
   }
 
   private async handleNotificationClose(
     notificationId: string,
-    _byUser: boolean,
+    byUser: boolean,
   ) {
-    // A click/auto-dismiss already tracked CLICKED/AUTO_DISMISSED and then
-    // called clear(), which is what triggered this onClosed. Suppress the
-    // trailing CLOSED so it doesn't overwrite that row; only genuine
-    // user-initiated closes (not in the set) are tracked as CLOSED.
+    // A click, auto-dismiss or tag replacement called clear(), which is what
+    // triggered this onClosed.
     const wasProgrammatic = this.programmaticallyCleared.delete(notificationId);
-    if (!wasProgrammatic) {
-      this.sendTrackNotificationEvent(
-        notificationId,
-        PushNotificationStatus.CLOSED,
-      );
+
+    // Only a close the user made is a dismissal: push-api counts `dismissed`
+    // against what the user is sent, so a close by the system must not be
+    // one. A notification without a stored entry (legacy, or already handled
+    // by a worker that has since died) reports nothing either.
+    let dismissed: Promise<void> | undefined;
+    if (!wasProgrammatic && byUser === true) {
+      const notification =
+        await NotificationsState.instance.getNotification(notificationId);
+      dismissed = this.sendFeedback(notification?.notificationId, 'dismissed');
     }
 
-    // Every terminal path (click, auto-dismiss, user-close) funnels through
-    // onClosed, so this is the single cleanup point that keeps persisted state
-    // from growing unbounded now that it survives worker termination.
+    // Every terminal path funnels through onClosed, so this is the cleanup
+    // point that keeps persisted state from growing unbounded.
     await NotificationsState.instance.removeNotification(notificationId);
+    await dismissed;
   }
 
+  // chrome.* events have no waitUntil; the handlers only have to make sure
+  // nothing they start is left as an unhandled rejection.
   private listenForPushNotificationEvents() {
-    chrome.notifications.onClicked.addListener(
-      this.handleNotificationClick.bind(this),
-    );
+    chrome.notifications.onClicked.addListener((notificationId) => {
+      this.handleNotificationClick(notificationId).catch((error) =>
+        console.warn('[PushTo] notification click handler failed', error),
+      );
+    });
 
-    chrome.notifications.onClosed.addListener(
-      this.handleNotificationClose.bind(this),
-    );
+    chrome.notifications.onClosed.addListener((notificationId, byUser) => {
+      this.handleNotificationClose(notificationId, byUser).catch((error) =>
+        console.warn('[PushTo] notification close handler failed', error),
+      );
+    });
   }
 
-  private async sendTrackNotificationEvent(
-    notificationId: string,
-    status: PushNotificationStatus,
-  ) {
-    await fetch(this.trackNotificationUrl, {
-      method: 'POST',
-      body: JSON.stringify({ correlationId: notificationId, status }),
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-    });
+  /**
+   * Feedback is best effort: a failure is logged and swallowed, so the
+   * returned promise never rejects.
+   */
+  private sendFeedback(
+    notificationId: number | undefined,
+    eventType: FeedbackEventType,
+  ): Promise<void> {
+    if (notificationId === undefined || !this.api) {
+      return Promise.resolve();
+    }
+    return this.api
+      .sendFeedback({
+        notification_id: notificationId,
+        event_type: eventType,
+      })
+      .catch((error) => {
+        console.warn(
+          `[PushTo] could not report "${eventType}" for notification ${notificationId}`,
+          error,
+        );
+      });
+  }
+}
+
+/** The toolbar badge only exists when the manifest has an `action` key. */
+export function clearBadge() {
+  setBadge('');
+}
+
+export function setBadge(text: string, color?: string) {
+  try {
+    void Promise.resolve(chrome.action?.setBadgeText({ text })).catch(
+      () => undefined,
+    );
+    if (color) {
+      void Promise.resolve(
+        chrome.action?.setBadgeBackgroundColor({ color }),
+      ).catch(() => undefined);
+    }
+  } catch (error) {
+    // An invalid color throws synchronously.
+    console.warn('[PushTo] could not update the toolbar badge', error);
   }
 }

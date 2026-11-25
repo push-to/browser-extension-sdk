@@ -1,11 +1,14 @@
 declare let self: ServiceWorkerGlobalScope;
 
+import { ApiClient, resolveApiBaseUrl } from './api-client';
 import { PushSubscriptionOptions, User } from './types';
 import { RegisterSubscription } from './register-subscription';
 import { ReceiveNotification } from './receive-notification';
 
 export class PushNotifications {
   private apiKey: string;
+  private api: ApiClient;
+  private vapidPublicKey?: string;
 
   constructor(options: PushSubscriptionOptions) {
     // Verify Service Worker context
@@ -19,20 +22,28 @@ export class PushNotifications {
     }
 
     this.apiKey = options.apiKey;
+    this.api = new ApiClient(
+      options.apiKey,
+      resolveApiBaseUrl(options.apiBaseUrl),
+    );
+    this.vapidPublicKey = options.vapidPublicKey;
 
-    ReceiveNotification.initialize(this.apiKey, options);
+    ReceiveNotification.initialize(this.api, options);
   }
 
   public async registerPushSubscription(user?: User) {
-    const registerSubscription = new RegisterSubscription(this.apiKey);
+    const registerSubscription = new RegisterSubscription(
+      this.api,
+      this.apiKey,
+      this.vapidPublicKey,
+    );
 
     let currentUrl: string;
     try {
       currentUrl = this.getExtensionUrl();
     } catch (error) {
-      // If we can't get URL from fetch event, use a fallback or throw a better error
       throw new Error(
-        `Failed to capture current URL from Service Worker fetch event: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Failed to read the extension URL: ${error instanceof Error ? error.message : String(error)}. ` +
           'Make sure the Service Worker is properly installed and activated.',
       );
     }
@@ -44,5 +55,3 @@ export class PushNotifications {
     return chrome.runtime.getURL(path);
   }
 }
-
-export type { User };
