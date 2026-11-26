@@ -1,3 +1,24 @@
+## [1.0.0](https://github.com/push-to/browser-extension-sdk/compare/v0.0.17...v1.0.0) (2026-11-26)
+
+### ⚠ BREAKING CHANGES
+
+* the SDK talks only to push-api. It needs a push-api key
+(one with no permissions) and PUSHTO_CORE_URL must be the push-api host,
+https and without /v1. Existing subscribers must call
+registerPushSubscription again to be registered there. Notifications sent
+by the old backend are still shown but no longer tracked. Timed
+auto-dismiss reports no event. Click targets must be http or https, so
+links to the extension's own pages no longer open.
+
+### Features
+
+* register and report through push-api instead of the old proxy ([115377f](https://github.com/push-to/browser-extension-sdk/commit/115377fea9238ed052d391e81bcc08fff62598bf))
+* register in one call and support verified user ids ([068c426](https://github.com/push-to/browser-extension-sdk/commit/068c426e5d3530d7f348ac3d329143106d2e6e5e))
+
+### Bug Fixes
+
+* **review:** address PR [#6](https://github.com/push-to/browser-extension-sdk/issues/6) review — same-tag replacement, registration order, base URL and state edge cases ([0fdde80](https://github.com/push-to/browser-extension-sdk/commit/0fdde80ed1c8c7492be76d5ff861952ba16c9140))
+
 ## [0.0.17](https://github.com/push-to/browser-extension-sdk/compare/v0.0.16...v0.0.17) (2026-07-10)
 
 ### Bug Fixes
