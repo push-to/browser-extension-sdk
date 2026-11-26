@@ -4,6 +4,7 @@ import { ApiClient, PushToApiError } from './api-client';
 import { SDK_VERSION } from './constants';
 import { hasNotificationsPermission } from './notification-permission';
 import {
+  assertSafeId,
   identifiedId,
   PushNotificationStorage,
 } from './push-notification-storage';
@@ -27,7 +28,7 @@ function text(value: unknown): string | undefined {
  * `external_id` is always sent, because push-api finds or creates the user by
  * it: an anonymous subscriber gets `anon:<anonymousId>`. A string `id` is sent
  * with its surrounding whitespace removed (`String.prototype.trim`) and
- * otherwise untouched; a finite number as its decimal string. push-api checks
+ * otherwise untouched; a safe integer as its decimal string. push-api checks
  * `user_hash` against exactly that string. `user_hash` is sent
  * only next to an identified id: an anonymous id needs no proof. `name` is
  * split on its first run of whitespace. Absent and empty fields are left out
@@ -37,7 +38,7 @@ export function toUserBody(
   user: User | undefined,
   anonymousId: string,
 ): SubscriptionUserFields {
-  // A JS caller may pass a numeric id; that is still an identity.
+  // A numeric id is still an identity, when it is a safe integer.
   const id = identifiedId(user);
   const body: SubscriptionUserFields = {
     external_id: id ?? `anon:${anonymousId}`,
@@ -216,11 +217,15 @@ export class RegisterSubscription {
    * it must not undo what the user asked for.
    *
    * In every case `user` is remembered as the identity asked for.
+   *
+   * Rejects with a `TypeError` for a numeric `user.id` that is not a safe
+   * integer, before anything is remembered, cleared or sent.
    */
-  public registerPushSubscription(
+  public async registerPushSubscription(
     currentUrl: string,
     user?: User,
   ): Promise<RegistrationResult> {
+    assertSafeId(user);
     return RegisterSubscription.enqueue(async () => {
       await this.remember(user);
       if (await PushNotificationStorage.isOptedOut()) {

@@ -325,6 +325,89 @@ describe('identify / reset', () => {
     expect(numeric.userId).toBe(43);
   });
 
+  test('a numeric id is registered as its decimal string up to Number.MAX_SAFE_INTEGER, through identify and registerPushSubscription', async () => {
+    const pushTo = init();
+    expect((await pushTo.identify({ id: 42 })).externalId).toBe('42');
+    expect((await pushTo.registerPushSubscription({ id: -3 })).externalId).toBe(
+      '-3',
+    );
+    expect(
+      (await pushTo.identify({ id: Number.MAX_SAFE_INTEGER })).externalId,
+    ).toBe('9007199254740991');
+    expect(registrations().map((c) => c.body.external_id)).toEqual([
+      '42',
+      '-3',
+      '9007199254740991',
+    ]);
+    expect(env.storage['pt_identity']).toEqual({ id: '9007199254740991' });
+  });
+
+  test('a numeric id that is not a safe integer rejects with a TypeError: nothing is sent, remembered or cleared', async () => {
+    const hash = await userHash(IDENTITY_SECRET, 'user-1');
+    const pushTo = init();
+    await pushTo.identify({ id: 'user-1', hash });
+    await env.push({ title: 't', body: 'b', notification_id: 1, data: {} });
+    expect(env.active.has('1')).toBe(true);
+    env.fetchCalls.length = 0;
+    const stored = JSON.stringify([env.storage, env.session]);
+
+    for (const id of [2 ** 53, -(2 ** 53), 1.5, NaN, Infinity, -Infinity]) {
+      for (const call of [
+        () => pushTo.identify({ id }),
+        () => pushTo.identify({ id, hash }),
+        () => pushTo.registerPushSubscription({ id }),
+        () => pushTo.registerPushSubscription({ id, email: 'a@b.co' }),
+      ]) {
+        const error = await call().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(TypeError);
+        expect((error as Error).message).toContain('as a string');
+      }
+    }
+
+    expect(env.fetchCalls).toEqual([]);
+    expect(JSON.stringify([env.storage, env.session])).toBe(stored);
+    // Not taken for a change of user either: the screen is untouched and
+    // delivery is not held back.
+    expect(env.active.has('1')).toBe(true);
+    expect('deliveryBlocked' in (await pushTo.getState())).toBe(false);
+    expect((await pushTo.identify({ id: 'user-1', hash })).status).toBe(
+      'unchanged',
+    );
+    expect(env.fetchCalls).toEqual([]);
+  });
+
+  test('what the public registerPushSubscription delegates to rejects the same way, without waiting for a registration in flight, and after unsubscribe()', async () => {
+    const pushTo = init();
+    await pushTo.identify({ id: 'user-1' });
+    const delegate = (pushTo as any).registration;
+
+    let settled = false;
+    const inFlight = pushTo.identify({ id: 'user-2' }).finally(() => {
+      settled = true;
+    });
+    const error = await delegate
+      .registerPushSubscription('chrome-extension://ext-test-id/', {
+        id: 2 ** 53,
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error.message).toContain('as a string');
+    expect(settled).toBe(false);
+    expect((await inFlight).externalId).toBe('user-2');
+    expect(registrations().map((c) => c.body.external_id)).toEqual([
+      'user-1',
+      'user-2',
+    ]);
+
+    await pushTo.unsubscribe();
+    const stored = JSON.stringify([env.storage, env.session]);
+    expect(
+      await pushTo.registerPushSubscription({ id: 1.5 }).catch((e) => e),
+    ).toBeInstanceOf(TypeError);
+    expect(JSON.stringify([env.storage, env.session])).toBe(stored);
+    expect(env.storage['pt_identity']).toEqual({ id: 'user-2' });
+  });
+
   test('reset posts `anon:<anonymousId>` for the same subscription and drops the remembered identity', async () => {
     const hash = await userHash(IDENTITY_SECRET, 'user-1');
     const pushTo = init();

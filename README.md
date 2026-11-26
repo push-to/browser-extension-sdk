@@ -236,7 +236,8 @@ pushTo.reset(): Promise<RegistrationResult>
 **`identify({ id, hash?, email?, name?, imageUrl?, language? })`** — call it
 when the user signs in, and on every service-worker start while they are
 signed in. `id` is your own id for the user and is required (a `TypeError`
-without one). On the server:
+without one). A numeric `id` must be a safe integer; pass a larger one as a
+string (see [Things to know](#things-to-know)). On the server:
 
 - The user with `external_id` = `id` is found, or created if it does not
   exist. `email` and `name` are stored **only when the call creates the
@@ -506,6 +507,14 @@ curl -X PATCH "$PUSH_API_URL/v1/identity-verification" \
   and `"user-1"` are two different ids with two different hashes. The safe
   rule: give the SDK and your hash function the same id, with no surrounding
   whitespace.
+- **A numeric `id` must be a safe integer** (`Number.isSafeInteger`). With
+  any other number (`2 ** 53` or more, a fraction, `NaN`, `Infinity`)
+  `identify` and `registerPushSubscription` reject with a `TypeError`, and
+  nothing is remembered or sent. Pass an id that can be larger than
+  `Number.MAX_SAFE_INTEGER` (a 64-bit database id, a snowflake) as a
+  string, taken as a string from your server's JSON: as a number JavaScript
+  has already rounded it, so two users would be registered under one
+  `external_id` and neither hash would match.
 - **Enforcement is per tenant, and off by default.**
 - With enforcement on, an `id` without a hash is refused
   (`403 user_hash_required`). `reset()` (the anonymous subscriber) needs no
@@ -908,7 +917,8 @@ entry):
 
 ```ts
 interface User {
-  id?: string | number; // required by identify()
+  id?: string | number; // required by identify(); a number must be a safe
+                     // integer: pass a larger id as a string
   hash?: string;     // identity proof for `id`, computed by your server
   email?: string;
   name?: string;
@@ -944,7 +954,7 @@ nothing.
 
 | `User` field | Sent as |
 | --- | --- |
-| `id` | `external_id`: a string with surrounding whitespace trimmed, a number as its decimal string. Without an `id` the SDK sends `anon:<anonymousId>`, so registering again reaches the same anonymous user instead of creating a new one. |
+| `id` | `external_id`: a string with surrounding whitespace trimmed, a number as its decimal string. A number must be a safe integer (`Number.isSafeInteger`); any other number is rejected with a `TypeError`, so pass a larger id as a string. Without an `id` the SDK sends `anon:<anonymousId>`, so registering again reaches the same anonymous user instead of creating a new one. |
 | `hash` | `user_hash`, only when an `id` is given. A `hash` without an `id` is dropped, with one `console.warn`. See [Identity verification](#identity-verification). |
 | `email` | user `email`. Must be a valid address, or the API answers `422`. |
 | `name` | split on the first run of whitespace into user `first_name` and `last_name` (`"Jane van der Berg"` → `Jane` / `van der Berg`; a single word is only a `first_name`). |
@@ -1106,7 +1116,9 @@ notifications are displayed normally. It is also
 successful registration yet, which includes a browser waiting for the
 `notifications` permission (`status: 'permission_required'`).
 
-`identify` rejects with a plain `TypeError` when `user.id` is missing.
+`identify` rejects with a plain `TypeError` when `user.id` is missing, and
+so do `identify` and `registerPushSubscription` when it is a number that is
+not a safe integer.
 `unsubscribe` does not reject for an API failure (see
 [Lifecycle and deletion](#lifecycle-and-deletion)).
 

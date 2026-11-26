@@ -75,7 +75,10 @@ const USER_FIELDS = [
   'language',
 ] as const;
 
-/** Only the known members, and only strings (or a numeric id). */
+/**
+ * Only the known members, and only strings (or a numeric id that is a safe
+ * integer; see `assertSafeId`).
+ */
 function toStoredUser(user: unknown): User | undefined {
   if (!user || typeof user !== 'object') {
     return undefined;
@@ -85,7 +88,7 @@ function toStoredUser(user: unknown): User | undefined {
     const value = (user as Record<string, unknown>)[field];
     if (
       typeof value === 'string' ||
-      (field === 'id' && typeof value === 'number' && Number.isFinite(value))
+      (field === 'id' && Number.isSafeInteger(value))
     ) {
       stored[field] = value;
     }
@@ -95,15 +98,33 @@ function toStoredUser(user: unknown): User | undefined {
 
 /**
  * The external id an identified `User` is registered under: a string `id`
- * with its surrounding whitespace removed, a finite number as its decimal
+ * with its surrounding whitespace removed, a safe integer as its decimal
  * string. `undefined` for an anonymous subscriber.
  */
 export function identifiedId(user: User | undefined): string | undefined {
   const id: unknown = user?.id;
-  if (typeof id === 'number' && Number.isFinite(id)) {
+  if (Number.isSafeInteger(id)) {
     return String(id);
   }
   return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+}
+
+/**
+ * Throws a `TypeError` for a numeric `id` that is not a safe integer. That
+ * is a caller error, not an anonymous subscriber: a number above
+ * `Number.MAX_SAFE_INTEGER` was rounded before the SDK saw it, so two users
+ * would share one external id, and the decimal string of any other
+ * (`"1.5"`, `"1e+21"`, `"NaN"`) is not an id the integrator's server signed.
+ * Every registration with a `User` from the caller checks this first, so
+ * `identifiedId` and `toStoredUser` never meet such a number.
+ */
+export function assertSafeId(user: User | undefined): void {
+  const id: unknown = user?.id;
+  if (typeof id === 'number' && !Number.isSafeInteger(id)) {
+    throw new TypeError(
+      'PushNotifications: a numeric `user.id` must be a safe integer (Number.isSafeInteger). Pass the id as a string: JavaScript has already rounded a larger number, so two users could be registered under the same id.',
+    );
+  }
 }
 
 /** `chrome.storage.session`, where the runtime has it. */

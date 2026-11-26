@@ -530,14 +530,17 @@ describe('subscription without an exposed key (S7)', () => {
 });
 
 describe('identity', () => {
-  test('a finite numeric id is an identity, not anonymous', () => {
+  test('a numeric id that is a safe integer is an identity, not anonymous', () => {
     expect(toUserBody({ id: 12345 }, 'a1')).toEqual({
       external_id: '12345',
     });
     expect(toUserBody({ id: 0 }, 'a1')).toEqual({
       external_id: '0',
     });
-    for (const notAnId of [NaN, Infinity, {}, [], true, null]) {
+    // What is not an id to the conversion. The numbers among these never
+    // get this far from a caller: identify / registerPushSubscription
+    // reject them first (see integrator-feedback.test.ts).
+    for (const notAnId of [NaN, Infinity, 1.5, 2 ** 53, {}, [], true, null]) {
       expect(toUserBody({ id: notAnId as unknown as string }, 'a1')).toEqual({
         external_id: 'anon:a1',
       });

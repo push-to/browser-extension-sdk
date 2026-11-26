@@ -23,15 +23,22 @@ export interface User {
    * Your own id for the signed-in user; sent as push-api's `external_id` (a
    * number as its decimal string). Required by `identify`. Without it the
    * subscriber is anonymous.
+   *
+   * A number is accepted only when it is a safe integer
+   * (`Number.isSafeInteger`); with any other number the call rejects with a
+   * `TypeError`. Pass an id that can be larger than
+   * `Number.MAX_SAFE_INTEGER` (a 64-bit id) as a string: as a number
+   * JavaScript has already rounded it, and two users would be registered
+   * under one `external_id`.
    */
   id?: string | number;
   /**
    * Identity proof (`user_hash`) for `id`, computed by **your server**:
    * `hex(HMAC-SHA256(identity_secret, id))`, over the `id` exactly as the SDK
-   * sends it: a string trimmed of surrounding whitespace, a number as its
-   * decimal string, nothing else changed. Required when the tenant has
-   * identity verification on. Without an `id` it is dropped, with a
-   * `console.warn`. Never compute it in the extension: the secret must not
+   * sends it: a string trimmed of surrounding whitespace, a number (a safe
+   * integer) as its decimal string, nothing else changed. Required when the
+   * tenant has identity verification on. Without an `id` it is dropped, with
+   * a `console.warn`. Never compute it in the extension: the secret must not
    * ship.
    */
   hash?: string;
@@ -91,8 +98,9 @@ export interface PushState {
    * for (`identify` / `reset`) is not the one the API last confirmed. That
    * is a sign-out or a switch of user the API has not confirmed, and also an
    * identity whose first registration has not succeeded yet (as with
-   * `status: 'permission_required'`); it lasts for as long as that call
-   * keeps failing. Absent when notifications are displayed normally.
+   * `status: 'permission_required'`); it lasts until the `notifications`
+   * permission is granted and a registration of the identity asked for
+   * succeeds. Absent when notifications are displayed normally.
    */
   deliveryBlocked?: 'opted_out' | 'identity_change_pending';
   /** push-api's ids from the last registration; only when `registered`. */

@@ -178,6 +178,7 @@ describe('registration — POST /v1/subscriptions', () => {
     ]);
     // The address and the keys themselves are not stored, only their hash.
     expect(JSON.stringify(env.storage)).not.toContain('p256dh-1');
+    expect(JSON.stringify(env.storage)).not.toContain('auth-1');
     expect(JSON.stringify(env.storage)).not.toContain('fcm.googleapis.com');
     expect(env.storage['pt_registration'].fingerprint).toMatch(
       /^[0-9a-f]{64}$/,

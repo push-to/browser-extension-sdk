@@ -81,14 +81,16 @@ export class PushNotifications {
    * `status: 'unsubscribed'`; without the `notifications` permission, with
    * `status: 'permission_required'`. The identity is remembered either way.
    *
-   * Rejects with a `TypeError` when `user.id` is missing or empty, and with a
-   * `PushToApiError` when push-api refuses the call.
+   * Rejects with a `TypeError` when `user.id` is missing or empty, or is a
+   * number that is not a safe integer (pass such an id as a string), and
+   * with a `PushToApiError` when push-api refuses the call.
    */
   public async identify(user: User): Promise<RegistrationResult> {
     const id: unknown = user?.id;
+    // Which numbers are an id is checked by the registration itself, for
+    // `registerPushSubscription` too: it rejects the others.
     const valid =
-      (typeof id === 'string' && id.trim() !== '') ||
-      (typeof id === 'number' && Number.isFinite(id));
+      (typeof id === 'string' && id.trim() !== '') || typeof id === 'number';
     if (!valid) {
       throw new TypeError(
         'PushNotifications.identify: `user.id` is required. Use reset() for a signed-out (anonymous) subscriber.',
@@ -128,6 +130,7 @@ export class PushNotifications {
    * `identify(user)` when `user` has an `id`, `reset()` without a `user`.
    * Kept for source compatibility; prefer those two names. A `user` without
    * an `id` registers the anonymous subscriber with the other fields given.
+   * Rejects with a `TypeError` for a numeric `id` that is not a safe integer.
    */
   public registerPushSubscription(user?: User): Promise<RegistrationResult> {
     return this.register(user);
