@@ -67,9 +67,14 @@ jobs:
             echo "No test files found in packages directory, skipping..."
           fi
 
+      # semantic-release's prepare step writes the released version and
+      # builds again (tools/prepare-release.mjs): the build above ran with the
+      # previous version in package.json, and the bundle reports that version
+      # as `sdk_version`. That second build needs the host too.
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSHTO_CORE_URL: ${{ secrets.PUSHTO_CORE_URL }}
         run: bunx semantic-release
 
   # Manual recovery: publish an already-tagged version whose npm publish failed
@@ -118,6 +123,9 @@ jobs:
             echo "Tag ${{ inputs.tag }} does not match package version v${PKG_VERSION}" >&2
             exit 1
           fi
+
+      - name: Verify the bundle reports the package version
+        run: node tools/prepare-release.mjs --check
 
       - name: Publish
         run: cd packages/chrome-extension && npm publish --access public --tag latest

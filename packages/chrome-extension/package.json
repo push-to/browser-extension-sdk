@@ -9,28 +9,52 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      },
       "default": "./dist/index.js"
-    }
+    },
+    "./page": {
+      "import": {
+        "types": "./dist/page.d.ts",
+        "default": "./dist/page.js"
+      },
+      "require": {
+        "types": "./dist/page.d.cts",
+        "default": "./dist/page.cjs"
+      },
+      "default": "./dist/page.js"
+    },
+    "./package.json": "./package.json"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "page": [
+        "./dist/page.d.ts"
+      ]
+    }
+  },
+  "sideEffects": false,
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "clean": "rm -rf dist .turbo node_modules"
-  },
-  "dependencies": {
-    "@types/chrome": "^0.0.332",
-    "@types/node": "^24.0.12"
+    "clean": "rm -rf dist .turbo node_modules",
+    "prepack": "cp ../../README.md README.md"
   },
   "devDependencies": {
+    "@types/chrome": "^0.0.332",
+    "@types/node": "^24.0.12",
     "dotenv": "^17.2.0",
     "tsup": "^8.5.0",
     "typescript": "^5.8.3"

@@ -8,6 +8,7 @@
 
 import { ApiClient } from '../api-client';
 import { Dismiss } from '../dismiss';
+import { PermissionWatcher } from '../notification-permission';
 import { NotificationsState } from '../notifications-state';
 import { PushNotificationEvents } from '../push-notification-events';
 import { PushNotificationStorage } from '../push-notification-storage';
@@ -82,6 +83,13 @@ export function vapidKey(fill: number) {
 export function installMocks() {
   const env = {
     storage: {} as Record<string, any>,
+    /** `chrome.storage.session`: survives a worker restart, not a browser restart. */
+    session: {} as Record<string, any>,
+    runtimeOnMessage: makeEvent(),
+    /** Every `chrome.runtime.sendMessage` call. */
+    sentMessages: [] as any[],
+    /** What `sendMessage` does when no listener exists: Chrome rejects. */
+    deliverMessages: true,
     alarms: new Map<string, { delayInMinutes: number }>(),
     /** Notifications on screen, with the options they were created with. */
     active: new Map<string, any>(),
@@ -122,7 +130,52 @@ export function installMocks() {
     notificationsOnClosed: makeEvent(),
     alarmsOnAlarm: makeEvent(),
     actionOnClicked: makeEvent(),
+    permissionsOnAdded: makeEvent(),
+    permissionsOnRemoved: makeEvent(),
     pushListeners: [] as Listener[],
+    /** Whether the extension holds the `notifications` permission. */
+    notificationsGranted: true,
+    /** What the user answers to `chrome.permissions.request`. */
+    permissionRequestAnswer: true,
+    permissionRequestCalls: [] as any[],
+    /** Every `pushManager.getSubscription` / `subscribe` call. */
+    pushManagerCalls: 0,
+    /** Address → `p256dh` of the subscriptions the fake push-api holds active. */
+    activeEndpoints: new Map<string, string>(),
+    testNotificationId: 9001,
+
+    /**
+     * `notifications` is an optional permission that is not granted:
+     * `chrome.notifications` is undefined and `pushManager` fails at once.
+     */
+    withoutNotificationsPermission() {
+      env.notificationsGranted = false;
+      delete (globalThis as any).chrome.notifications;
+    },
+    /**
+     * The user grants it. `exposeApi: false` models a worker in which
+     * `chrome.notifications` does not appear until it restarts;
+     * `fireEvent: false` one that gets no `permissions.onAdded`.
+     */
+    grantNotifications(
+      options: { exposeApi?: boolean; fireEvent?: boolean } = {},
+    ) {
+      env.notificationsGranted = true;
+      if (options.exposeApi !== false) {
+        (globalThis as any).chrome.notifications = notificationsApi;
+      }
+      if (options.fireEvent !== false) {
+        env.permissionsOnAdded.listeners.forEach((l) =>
+          l({ permissions: ['notifications'], origins: [] }),
+        );
+      }
+    },
+    removeNotificationsPermission() {
+      env.withoutNotificationsPermission();
+      env.permissionsOnRemoved.listeners.forEach((l) =>
+        l({ permissions: ['notifications'], origins: [] }),
+      );
+    },
 
     feedback() {
       return env.fetchCalls.filter((c) => c.path === '/v1/feedback');
@@ -168,9 +221,36 @@ export function installMocks() {
         env.notificationsOnClosed.listeners,
         env.alarmsOnAlarm.listeners,
         env.actionOnClicked.listeners,
+        env.permissionsOnAdded.listeners,
+        env.permissionsOnRemoved.listeners,
+        env.runtimeOnMessage.listeners,
       ]) {
         listeners.length = 0;
       }
+    },
+    /** The browser is closed and opened again: session storage is gone too. */
+    restartBrowser() {
+      env.restartWorker();
+      for (const key of Object.keys(env.session)) {
+        delete env.session[key];
+      }
+    },
+    /**
+     * A message as `chrome.runtime.onMessage` dispatches it. Resolves to
+     * what each listener returned, and whether any called `sendResponse`.
+     */
+    dispatchMessage(
+      message: unknown,
+      /** `null`: a sender without an id. */
+      senderId: string | null = 'ext-test-id',
+    ) {
+      let responded = false;
+      const returned = env.runtimeOnMessage.listeners.map((l) =>
+        l(message, senderId === null ? {} : { id: senderId }, () => {
+          responded = true;
+        }),
+      );
+      return { returned, responded };
     },
     /** The user closes a notification: onClosed with no clear() before it. */
     userClose(id: string) {
@@ -268,7 +348,35 @@ export function installMocks() {
       const key = `${call.body?.external_id} ${call.body?.subscription?.endpoint}`;
       const status = registered.has(key) ? 200 : 201;
       registered.add(key);
+      env.activeEndpoints.set(
+        call.body?.subscription?.endpoint,
+        call.body?.subscription?.keys?.p256dh,
+      );
       return jsonResponse(status, { user_id: env.userId, endpoint_id: 7 });
+    }
+    // Both act only on a row whose stored keys equal the ones presented.
+    const presented = call.body?.subscription;
+    const holdsIt =
+      presented?.endpoint !== undefined &&
+      env.activeEndpoints.get(presented.endpoint) === presented.keys?.p256dh;
+    if (call.method === 'DELETE' && call.path === '/v1/subscriptions') {
+      if (holdsIt) {
+        env.activeEndpoints.delete(presented.endpoint);
+      }
+      return new Response(null, { status: 204 });
+    }
+    if (call.method === 'POST' && call.path === '/v1/subscriptions/test') {
+      return holdsIt
+        ? jsonResponse(200, {
+            sent: true,
+            notification_id: env.testNotificationId,
+          })
+        : jsonResponse(404, {
+            error: {
+              code: 'subscription_not_found',
+              message: 'no active subscription with these keys',
+            },
+          });
     }
     // A browser key no longer reaches the id-based routes.
     if (call.method === 'POST' && /^\/v1\/users(\/|$)/.test(call.path)) {
@@ -287,16 +395,68 @@ export function installMocks() {
     });
   };
 
+  const notificationsApi: any = {
+    create: (id: string, options: any, callback?: (id: string) => void) => {
+      env.createCalls.push({ id, options });
+      const error = env.createError(options);
+      if (error) {
+        chromeMock.runtime.lastError = { message: error };
+      } else {
+        env.active.set(id, options);
+      }
+      callback?.(id);
+      chromeMock.runtime.lastError = undefined;
+    },
+    clear: (id: string, callback?: (wasCleared: boolean) => void) => {
+      const wasCleared = env.active.delete(id);
+      callback?.(wasCleared);
+      // Real chrome.notifications.clear() asynchronously fires onClosed —
+      // model that cascade so read-before-clear ordering bugs are actually
+      // exercised (see "Click path ordering").
+      if (wasCleared && env.clearFiresOnClosed) {
+        queueMicrotask(() =>
+          env.notificationsOnClosed.listeners.forEach((l) => l(id, false)),
+        );
+      }
+    },
+    getAll: (cb: (obj: Record<string, unknown>) => void) => {
+      const obj: Record<string, unknown> = {};
+      for (const id of env.active.keys()) obj[id] = {};
+      cb(obj);
+    },
+    onClicked: env.notificationsOnClicked,
+    onClosed: env.notificationsOnClosed,
+  };
+
   const chromeMock: any = {
     storage: {
       local: {
         get: async (key: string) => ({ [key]: env.storage[key] }),
+        remove: async (keys: string | string[]) => {
+          if (env.storageSetError) {
+            throw new Error(env.storageSetError);
+          }
+          for (const key of [keys].flat()) {
+            delete env.storage[key];
+          }
+        },
         set: async (obj: Record<string, any>) => {
           if (env.storageSetError) {
             throw new Error(env.storageSetError);
           }
           // chrome.storage round-trips values through JSON.
           Object.assign(env.storage, JSON.parse(JSON.stringify(obj)));
+        },
+      },
+      session: {
+        get: async (key: string) => ({ [key]: env.session[key] }),
+        set: async (obj: Record<string, any>) => {
+          Object.assign(env.session, JSON.parse(JSON.stringify(obj)));
+        },
+        remove: async (keys: string | string[]) => {
+          for (const key of [keys].flat()) {
+            delete env.session[key];
+          }
         },
       },
     },
@@ -307,38 +467,7 @@ export function installMocks() {
       clear: async (name: string) => env.alarms.delete(name),
       onAlarm: env.alarmsOnAlarm,
     },
-    notifications: {
-      create: (id: string, options: any, callback?: (id: string) => void) => {
-        env.createCalls.push({ id, options });
-        const error = env.createError(options);
-        if (error) {
-          chromeMock.runtime.lastError = { message: error };
-        } else {
-          env.active.set(id, options);
-        }
-        callback?.(id);
-        chromeMock.runtime.lastError = undefined;
-      },
-      clear: (id: string, callback?: (wasCleared: boolean) => void) => {
-        const wasCleared = env.active.delete(id);
-        callback?.(wasCleared);
-        // Real chrome.notifications.clear() asynchronously fires onClosed —
-        // model that cascade so read-before-clear ordering bugs are actually
-        // exercised (see "Click path ordering").
-        if (wasCleared && env.clearFiresOnClosed) {
-          queueMicrotask(() =>
-            env.notificationsOnClosed.listeners.forEach((l) => l(id, false)),
-          );
-        }
-      },
-      getAll: (cb: (obj: Record<string, unknown>) => void) => {
-        const obj: Record<string, unknown> = {};
-        for (const id of env.active.keys()) obj[id] = {};
-        cb(obj);
-      },
-      onClicked: env.notificationsOnClicked,
-      onClosed: env.notificationsOnClosed,
-    },
+    notifications: undefined as any,
     action: {
       setBadgeText: async (opts: { text: string }) => {
         env.badgeTextCalls.push(opts.text);
@@ -357,15 +486,52 @@ export function installMocks() {
         return { id: 1 };
       },
     },
+    permissions: {
+      contains: async (query: { permissions?: string[] }) =>
+        (query.permissions ?? []).every(
+          (name) => name !== 'notifications' || env.notificationsGranted,
+        ),
+      request: (query: any) => {
+        env.permissionRequestCalls.push(query);
+        return Promise.resolve(env.permissionRequestAnswer);
+      },
+      onAdded: env.permissionsOnAdded,
+      onRemoved: env.permissionsOnRemoved,
+    },
     runtime: {
       id: 'ext-test-id',
       lastError: undefined,
       getURL: (p: string) =>
         `chrome-extension://ext-test-id/${p.replace(/^\//, '')}`,
       getManifest: () => env.manifest,
+      onMessage: env.runtimeOnMessage,
+      sendMessage: (message: unknown) => {
+        env.sentMessages.push(message);
+        if (
+          !env.deliverMessages ||
+          env.runtimeOnMessage.listeners.length === 0
+        ) {
+          return Promise.reject(
+            new Error(
+              'Could not establish connection. Receiving end does not exist.',
+            ),
+          );
+        }
+        env.dispatchMessage(message);
+        return Promise.resolve(undefined);
+      },
     },
   };
+  chromeMock.notifications = notificationsApi;
   (globalThis as any).chrome = chromeMock;
+
+  // Chrome documents "an immediate error" and no more; the name is a guess.
+  const failWithoutPermission = () => {
+    env.pushManagerCalls++;
+    if (!env.notificationsGranted) {
+      throw new DOMException('permission denied', 'NotAllowedError');
+    }
+  };
 
   (globalThis as any).self = {
     addEventListener: (type: string, fn: Listener) => {
@@ -377,8 +543,12 @@ export function installMocks() {
     },
     registration: {
       pushManager: {
-        getSubscription: async () => env.subscription,
+        getSubscription: async () => {
+          failWithoutPermission();
+          return env.subscription;
+        },
         subscribe: async (options: any) => {
+          failWithoutPermission();
           env.subscribeCalls.push(options);
           const key = new Uint8Array(options.applicationServerKey);
           if (env.subscription) {
@@ -442,11 +612,13 @@ export function resetSingletons() {
   (Dismiss as any).dismiss = undefined;
   (PushNotificationEvents as any).pushNotificationEvents = undefined;
   (ReceiveNotification as any).instance = undefined;
+  (PermissionWatcher as any).instance = undefined;
   ApiClient.maxRetries = API_CLIENT_DEFAULTS.maxRetries;
   // Not the production default: the tests do not wait out a real backoff.
   ApiClient.retryBaseDelayMs = 1;
   ApiClient.timeoutMs = API_CLIENT_DEFAULTS.timeoutMs;
   (PushNotificationStorage as any).anonymousId = undefined;
+  (PushNotificationStorage as any).memoryDetails = undefined;
   (RegisterSubscription as any).warnedHashWithoutId = false;
   // A registration a test left hanging must not hold up the next test's.
   (RegisterSubscription as any).queue = Promise.resolve();

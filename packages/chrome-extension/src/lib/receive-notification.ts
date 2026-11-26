@@ -2,8 +2,13 @@ declare let self: ServiceWorkerGlobalScope;
 
 import { ApiClient } from './api-client';
 import { Dismiss } from './dismiss';
+import { hasNotificationsApi } from './notification-permission';
 import { NotificationsState } from './notifications-state';
 import { iconCandidates, normalizePayload } from './payload';
+import {
+  DeliveryBlock,
+  PushNotificationStorage,
+} from './push-notification-storage';
 import {
   clearBadge,
   PushNotificationEvents,
@@ -22,7 +27,7 @@ export class ReceiveNotification {
   // only changes what they read, so it can never leave a second listener.
   private readonly onPush = (event: PushEvent) =>
     this.handlePushNotification(event);
-  private readonly onActionClicked = () => clearBadge();
+  private readonly onActionClicked = () => void clearBadge();
 
   private constructor() {}
 
@@ -40,17 +45,27 @@ export class ReceiveNotification {
     }
     this.instance.defaultNotificationIcon = options.defaultNotificationIcon;
 
-    // Register the durable-dismiss alarm listener at top-level SW startup so a
-    // worker re-woken by an alarm it never scheduled can still handle it.
-    Dismiss.instance.registerListeners();
-
-    // Wire chrome.notifications.onClicked/onClosed at top-level startup too.
-    // The first `instance` access registers those listeners; without this a
-    // worker woken solely by a notification click would have no onClicked
-    // listener at dispatch time and the click would be lost.
     PushNotificationEvents.instance.configure(api);
 
+    // The alarm listener and the chrome.notifications ones, at top-level SW
+    // startup: a worker woken solely by an alarm or a notification click has
+    // to have them by the time the event is dispatched.
+    this.attachNotificationListeners();
+
     return this.instance;
+  }
+
+  /**
+   * Adds whichever of the SDK's `chrome.notifications` (and alarm) listeners
+   * are still missing, and resolves to whether `chrome.notifications` can be
+   * used. With `notifications` as an optional permission the API is absent
+   * until the grant, so this runs at startup, when `permissions.onAdded`
+   * reports the grant, and before a notification is displayed. Each listener
+   * is added at most once per worker.
+   */
+  public static attachNotificationListeners(): boolean {
+    Dismiss.instance.registerListeners();
+    return PushNotificationEvents.instance.attachListeners();
   }
 
   private handlePushNotification(event: PushEvent) {
@@ -82,6 +97,38 @@ export class ReceiveNotification {
   }
 
   private async showNotification(notification: NormalizedNotification) {
+    // The API may have appeared since startup without a `permissions.onAdded`
+    // (see notification-permission.ts). Without it nothing can be shown.
+    if (
+      !ReceiveNotification.attachNotificationListeners() ||
+      !hasNotificationsApi()
+    ) {
+      console.warn(
+        '[PushTo] a push message arrived but chrome.notifications is not available (the `notifications` permission is not granted): nothing is shown',
+      );
+      return;
+    }
+
+    // After `unsubscribe()`, and while a sign-out or a switch of user has not
+    // been confirmed by the API, what arrives is not for whoever is at this
+    // browser now: nothing is shown and nothing is reported. If the state
+    // cannot be read the notification is shown, like everywhere else where
+    // storage is only bookkeeping.
+    let block: DeliveryBlock | undefined;
+    try {
+      block = await PushNotificationStorage.deliveryBlock();
+    } catch (error) {
+      console.warn('[PushTo] could not read the delivery state', error);
+    }
+    if (block) {
+      console.warn(
+        block === 'opted_out'
+          ? '[PushTo] a push message arrived after unsubscribe(): nothing is shown'
+          : '[PushTo] a push message arrived while a change of user is not yet registered: nothing is shown',
+      );
+      return;
+    }
+
     const { id } = notification;
     const options: Omit<
       chrome.notifications.NotificationCreateOptions,
@@ -126,7 +173,7 @@ export class ReceiveNotification {
     }
 
     if (notification.badge) {
-      setBadge(notification.badge.text, notification.badge.color);
+      await setBadge(notification.badge.text, notification.badge.color);
     }
 
     await delivered;
@@ -156,6 +203,7 @@ export class ReceiveNotification {
       console.warn('[PushTo] could not persist the notification state', error);
     }
 
+    PushNotificationEvents.instance.markCreated(id);
     const shown = await this.createWithIconFallback(
       id,
       options,
@@ -209,6 +257,35 @@ export class ReceiveNotification {
     console.warn('[PushTo] chrome.notifications.create failed', lastError);
     return false;
   }
+}
+
+/**
+ * Takes every notification the SDK has on screen away, with its stored
+ * entry and auto-dismiss alarm, and clears the SDK's badge. Nothing is
+ * reported: the user did not dismiss them. Notifications the extension made
+ * itself are not touched. Never rejects.
+ */
+export async function clearDisplayedNotifications(): Promise<void> {
+  // The stored ones, and the ones this worker showed without being able to
+  // store them.
+  const ids = new Set(PushNotificationEvents.instance.createdIds());
+  try {
+    for (const id of await NotificationsState.instance.listIds()) {
+      ids.add(id);
+    }
+  } catch (error) {
+    console.warn('[PushTo] could not list the notifications on screen', error);
+  }
+  for (const id of ids) {
+    // One that fails must not leave the others on screen.
+    try {
+      await Dismiss.instance.handleNotificationClose(id).catch(() => undefined);
+      await PushNotificationEvents.instance.dismissSilently(id);
+    } catch (error) {
+      console.warn('[PushTo] could not clear a notification', error);
+    }
+  }
+  await clearBadge();
 }
 
 function createNotification(

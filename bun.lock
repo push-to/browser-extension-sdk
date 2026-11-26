@@ -28,12 +28,10 @@
     },
     "packages/chrome-extension": {
       "name": "@push-to/chrome-extension",
-      "version": "0.0.14",
-      "dependencies": {
+      "version": "1.0.0",
+      "devDependencies": {
         "@types/chrome": "^0.0.332",
         "@types/node": "^24.0.12",
-      },
-      "devDependencies": {
         "dotenv": "^17.2.0",
         "tsup": "^8.5.0",
         "typescript": "^5.8.3",

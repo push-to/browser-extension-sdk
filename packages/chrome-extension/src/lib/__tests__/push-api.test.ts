@@ -169,9 +169,15 @@ describe('registration — POST /v1/subscriptions', () => {
       },
     });
     expect(Object.keys(env.storage['pt_registration']).sort()).toEqual([
+      'endpointHash',
+      'endpointId',
+      'externalId',
       'fingerprint',
       'registeredAt',
+      'userId',
     ]);
+    // The address itself is not stored, only its hash.
+    expect(JSON.stringify(env.storage)).not.toContain('fcm.googleapis.com');
     expect(env.storage['pt_registration'].fingerprint).toMatch(
       /^[0-9a-f]{64}$/,
     );
@@ -324,7 +330,7 @@ describe('registration — POST /v1/subscriptions', () => {
     ).toEqual([null, null, 1234]);
   });
 
-  test('the hash is part of the fingerprint: a new one re-registers, the same one does not, and it is not stored', async () => {
+  test('the hash is part of the fingerprint: a new one re-registers, the same one does not, and it never reaches chrome.storage.local', async () => {
     const first = await userHash(IDENTITY_SECRET, 'user-1');
     const rotated = await userHash('rotated-secret', 'user-1');
     const register = async (user: object) => {
@@ -345,13 +351,22 @@ describe('registration — POST /v1/subscriptions', () => {
     expect(await register({ id: 'user-1' })).toEqual([undefined]);
 
     await register({ id: 'user-1', hash: rotated });
+    // chrome.storage.local (on disk, readable by content scripts) holds the
+    // id and a one-way fingerprint, never the proof itself.
     expect(JSON.stringify(env.storage)).not.toContain(rotated);
     expect(JSON.stringify(env.storage)).not.toContain(first);
+    expect(env.storage['pt_identity']).toEqual({ id: 'user-1', details: true });
     expect(Object.keys(env.storage).sort()).toEqual([
       'pt_anonymousId',
+      'pt_identity',
       'pt_registration',
       'pt_vapidKey',
     ]);
+    // The proof last given is in session storage; a superseded one is gone.
+    expect(env.session['pt_identity']).toEqual({
+      user: { id: 'user-1', hash: rotated },
+    });
+    expect(JSON.stringify(env.session)).not.toContain(first);
   });
 
   test('the hash is checked over the id as the SDK sends it: trimmed, a number as its decimal string, nothing else changed', async () => {
@@ -1590,10 +1605,17 @@ describe('re-initialisation', () => {
     }
   });
 
-  test('the toolbar action click clears the badge once', () => {
+  test('the toolbar action click clears the badge once', async () => {
     init();
     init();
+    await env.push({
+      title: 't',
+      body: 'b',
+      notification_id: 101,
+      data: { badge: { text: '1' } },
+    });
     env.actionOnClicked.listeners.forEach((l) => l());
-    expect(env.badgeTextCalls).toEqual(['']);
+    await sleep(10);
+    expect(env.badgeTextCalls).toEqual(['1', '']);
   });
 });

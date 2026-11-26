@@ -17,7 +17,7 @@ const { version } = JSON.parse(readFileSync('package.json', 'utf8')) as {
 };
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/page.ts'],
   format: ['esm', 'cjs'],
   dts: {
     resolve: true,
@@ -27,6 +27,10 @@ export default defineConfig({
     },
   },
   clean: true,
+  // Each entry is one self-contained file: `page` must hold nothing of the
+  // service-worker code, and `index.js` is copied as a single file by the
+  // smoke harness.
+  splitting: false,
   env: {
     PUSHTO_CORE_URL,
     PUSHTO_SDK_VERSION: version,

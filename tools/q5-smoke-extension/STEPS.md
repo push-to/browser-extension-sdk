@@ -7,8 +7,9 @@ through push-api (`core/apps/push-api`).
 
 > **The vendored bundle is stale.** `vendor/pushto-chrome-extension.js` was
 > built from 0.0.16 and still talks to the previous backend
-> (`/subscriptions`, `/notifications/track`). Rebuild and re-copy it (step 0)
-> before running anything below. Do not hand-edit it.
+> (`/subscriptions`, `/notifications/track`); it has none of `identify`,
+> `reset`, `getState`, `sendTestNotification` or `unsubscribe`. Rebuild and
+> re-copy it (step 0) before running anything below. Do not hand-edit it.
 
 You need two push-api keys of the same tenant, and the push-api host. Keep all
 three in your shell, never in a file in this repo:
@@ -29,7 +30,12 @@ cd packages/chrome-extension
 PUSHTO_CORE_URL="$PUSH_API_URL" bunx tsup
 cp dist/index.js ../../tools/q5-smoke-extension/vendor/pushto-chrome-extension.js
 cp dist/index.js.map ../../tools/q5-smoke-extension/vendor/pushto-chrome-extension.js.map
+cp dist/page.js ../../tools/q5-smoke-extension/vendor/pushto-page.js
 ```
+
+`dist/index.js` and `dist/page.js` are each one self-contained file.
+`vendor/pushto-page.js` is the page helper used by `permission.html`
+(step 10); it is not committed.
 
 Then edit `background.js` locally and replace the placeholder
 `'REPLACE_WITH_REAL_ADMIN_API_KEY'` with the **browser** key (the placeholder's
@@ -42,8 +48,9 @@ icon wins over it). **Do not commit that change.**
 1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** →
    select `tools/q5-smoke-extension/`.
 2. Click **service worker** on the extension's card to open its DevTools.
-3. Expect `[PT-Q5] registerPushSubscription OK` in the console and, in the
-   Network tab, in this order:
+3. Expect `[PT-Q5] registerPushSubscription OK` in the console, followed by
+   the result (`{ status: "registered", userId, endpointId, externalId:
+   "anon:<uuid>" }`), and, in the Network tab, in this order:
    - `GET  $PUSH_API_URL/v1/vapid-key` → `200`
    - `POST $PUSH_API_URL/v1/subscriptions` → `201` (`200` if this user already
      had the subscription). Body: `external_id: "anon:<uuid>"`, the harness's
@@ -56,14 +63,17 @@ icon wins over it). **Do not commit that change.**
    This proves `pushManager.subscribe()` works in an MV3 background worker with
    only the `notifications` / `alarms` / `storage` permissions, and that
    push-api's CORS lets the worker call it with no `host_permissions`.
-4. Read the push-api user id, which the sends below need: it is the `user_id`
-   in the response of `POST /v1/subscriptions` (Network tab → Response).
+4. Read the push-api user id, which the sends below need: it is `userId` in
+   the logged result (and `user_id` in the response of
+   `POST /v1/subscriptions`), or `(await pushTo.getState()).userId` in the
+   service worker console.
 
    ```sh
    export PUSHTO_USER_ID=<that number>
    ```
 5. **Re-registration is skipped.** Reload the extension (or stop the worker,
-   step 2, and wake it). `registerPushSubscription OK` is logged again and the
+   step 2, and wake it). `registerPushSubscription OK` is logged again, now
+   with `status: "unchanged"` and the same ids, and the
    Network tab shows **no request at all**: the registration and the VAPID key
    are both remembered for 24 hours.
 6. **It expires.** In the service worker console, age the stored registration,
@@ -223,6 +233,149 @@ for the notification is `delivered`.
 With the sending key of **another** tenant, `GET
 /v1/users/$PUSHTO_USER_ID/feedback` must answer `404`, and a `POST
 /v1/feedback` for one of the notification ids above must answer `404`.
+
+## 10. Optional `notifications` permission
+
+This is the flow for an extension that already has users. None of what Chrome
+does here is documented in full, so **record what you see at every step**,
+with the Chrome version; each "record" below is an open question.
+
+1. Edit `manifest.json` locally (do not commit): move `"notifications"` from
+   `"permissions"` to a new `"optional_permissions": ["notifications"]`.
+   Remove the extension and load it again, so it starts without the grant.
+2. Service worker console. Expected: no error from the top-level
+   `new PushNotifications(...)`, and
+   `registerPushSubscription OK { status: "permission_required", externalId: "anon:…" }`.
+   Network tab: **no request**.
+   - Record: `typeof chrome.notifications` (expected `"undefined"`).
+   - `await pushTo.getState()` → `permission: "missing"`, `subscribed: false`,
+     `registered: false`, `externalId: "anon:…"`.
+   - `await chrome.storage.local.get('pt_identity')` → `{ details: true }`
+     only; the harness's email is in
+     `await chrome.storage.session.get('pt_identity')`.
+3. Open `chrome-extension://<extension-id>/permission.html` in a tab and
+   click **Enable notifications**. Accept Chrome's prompt. The page shows
+   `granted: true`.
+4. **Without reloading the extension**, back in the service worker console
+   (the worker must be the same one: check it was not restarted in
+   `chrome://serviceworker-internals`):
+   - Network tab: `GET /v1/vapid-key` and `POST /v1/subscriptions` → `2xx`,
+     sent by the SDK on the grant. It has two triggers: its
+     `permissions.onAdded` listener, and the message
+     `{ type: 'pushto:permission-granted' }` that `permission.js` sends
+     through `requestNotificationPermission()`. **Record which arrived**:
+     before step 3 add, in the service worker console,
+     `chrome.runtime.onMessage.addListener((m) => console.log('[PT-Q5] message', m))`
+     next to the `onAdded` logger below. Then repeat the step once with the
+     message suppressed (grant with
+     `chrome.permissions.request({ permissions: ['notifications'] })` typed
+     into the page's console after a click on the page) to see whether
+     `onAdded` alone is enough.
+   - `await pushTo.getState()` → `permission: "granted"`, `subscribed: true`,
+     `registered: true`, with `userId` and `endpointId`.
+   - Record: whether `chrome.notifications` is now defined in this running
+     worker; whether `permissions.onAdded` fired at all (add
+     `chrome.permissions.onAdded.addListener((p) => console.log('[PT-Q5] onAdded', p))`
+     before step 3 to see it); and, if the registration failed, the exact
+     error name and message logged as
+     `[PushTo] could not register after the notifications permission was granted`.
+   - If nothing was registered: reload the extension. The top-level
+     `registerPushSubscription` must register now. Record that this was
+     needed.
+5. Repeat steps 1 to 3 with the worker **stopped** (step 2 of "Killing the
+   service worker") before clicking the button. Record whether the grant
+   wakes the worker and the registration happens, or only the next start
+   registers.
+6. Send a notification (step 3 of this document) and click it: it must be
+   displayed, open its link and report `delivered`, `clicked`, `opened`. Do it
+   once in the worker that received the grant and once after stopping the
+   worker.
+7. **Removal.** In the service worker console:
+   `await chrome.permissions.remove({ permissions: ['notifications'] })`.
+   Expected: `pt_registration` is gone from `chrome.storage.local`, no request
+   is made, `getState()` shows `permission: "missing"`. Grant again from
+   `permission.html`: a full registration is sent.
+8. **Update flow (the reason for all this).** Not covered by an unpacked
+   extension: with a packed build installed from a store or a local update
+   URL, publish an update that adds `notifications` to `optional_permissions`
+   only, and confirm the extension stays enabled. Then one that adds it to
+   `permissions`, and confirm Chrome disables the extension until the user
+   accepts.
+
+## 11. `sendTestNotification`
+
+With the extension registered (step 1, or step 10.4):
+
+1. `await pushTo.sendTestNotification()` → `{ notificationId: <number> }`,
+   Network tab: `POST /v1/subscriptions/test` → `200`.
+2. A notification "Test notification" / "Push notifications are working in
+   this browser." appears, followed by `POST /v1/feedback` (`delivered`) →
+   `202`. Click it: `clicked` → `202`, no tab opens (it has no `url`).
+3. Call it again at once: it rejects with `PushToApiError`, `status: 429`,
+   `code: "rate_limited"`, `details.retry_after` between 1 and 30.
+4. `GET /v1/users/$PUSHTO_USER_ID/feedback` (step 3) lists no event for the
+   test notification.
+5. After `await pushTo.unsubscribe()` (step 13), call it again: it rejects
+   with `code: "subscription_not_found"`, `status: 0`, and no request.
+
+## 12. `identify` and `reset` (detaching a user)
+
+1. `const a = await pushTo.identify({ id: 'q5-user' })` → `status:
+   "registered"`, `externalId: "q5-user"`. Note `a.userId`.
+2. Send a notification to `a.userId` (step 3): it is displayed.
+3. `const b = await pushTo.reset()` → `status: "registered"`,
+   `externalId: "anon:<uuid>"`, a different `userId`. Network tab: one
+   `POST /v1/subscriptions` with the **same** `subscription` as in 1.
+   `await chrome.storage.local.get('pt_identity')` → `{ pt_identity: {} }`,
+   and `await chrome.storage.session.get('pt_identity')` → `{}`.
+4. Send to `a.userId` again: the answer is `422 no_endpoints` (or lists no
+   `sent` entry) and **nothing is displayed**. Send to `b.userId`: displayed.
+5. `await pushTo.identify({})` rejects with a `TypeError` and makes no
+   request.
+6. **Screen is cleared on sign-out.** `await pushTo.identify({ id:
+   'q5-user' })`, send two notifications to that user (one with the `badge`
+   of step 3) and leave them on screen. Create one of your own:
+   `chrome.notifications.create('mine', { type: 'basic', iconUrl:
+   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+   title: 'mine', message: 'not the SDK\'s' })`. Then `await pushTo.reset()`:
+   the two Push To notifications disappear and the badge clears, with **no**
+   `dismissed` in the Network tab; `mine` stays. Click `mine`: it stays on
+   screen and nothing is sent. Set a badge by hand
+   (`chrome.action.setBadgeText({ text: 'X' })`) and click the toolbar icon:
+   it stays.
+
+7. **Sign-out while offline.** `await pushTo.identify({ id: 'q5-user' })`,
+   switch the Network tab to *Offline*, `await pushTo.reset()` (it rejects
+   with `network_error`), go back online **without** calling `reset()`
+   again, and send to the `q5-user` id: the API reports `sent`, **nothing is
+   displayed**, no feedback is posted, and the console shows
+   `[PushTo] a push message arrived while a change of user is not yet registered: nothing is shown`.
+   Then `await pushTo.reset()` → `registered`; a send to the anonymous
+   `userId` is displayed.
+
+## 13. `unsubscribe`
+
+1. `await pushTo.unsubscribe()`. Network tab: `DELETE /v1/subscriptions` →
+   `204`, with `{ subscription: { endpoint, expirationTime, keys } }`.
+2. `await pushTo.getState()` → `subscribed: false`, `registered: false`,
+   `optedOut: true`. `await chrome.storage.local.get(null)` shows no
+   `pt_registration` or `pt_vapidKey`.
+3. Send to the user (step 3): `422 no_endpoints`, nothing displayed.
+4. **It stays off.** Reload the extension, with the top-level
+   `registerPushSubscription` call in place: it logs
+   `{ status: "unsubscribed", externalId: … }` and makes **no request**.
+   With the optional-permission manifest of step 10, remove and grant the
+   permission again: no request either.
+5. **Offline.** Register again (`await pushTo.subscribe()`), switch the Network
+   tab to *Offline*, `await pushTo.unsubscribe()`: it resolves, logs
+   `[PushTo] could not remove the subscription from the API…`, and
+   `getState()` shows `subscribed: false`. Back online, send to the user: the
+   API reports the endpoint as failed (`subscription gone`) and a second send
+   is `422 no_endpoints`. Record whether the first send displayed anything
+   (it must not).
+6. `await pushTo.subscribe()` registers again (`status: "registered"`, the
+   identity last given) and `optedOut` is `false`. `reset()` / `identify()`
+   alone do not.
 
 ## Reporting
 

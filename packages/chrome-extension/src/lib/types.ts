@@ -19,6 +19,10 @@ export interface PushSubscriptionOptions {
 }
 
 export interface User {
+  /**
+   * Your own id for the signed-in user; sent as push-api's `external_id`.
+   * Required by `identify`. Without it the subscriber is anonymous.
+   */
   id?: string;
   /**
    * Identity proof (`user_hash`) for `id`, computed by **your server**:
@@ -34,6 +38,71 @@ export interface User {
   name?: string;
   imageUrl?: string;
   language?: string;
+}
+
+export type RegistrationStatus =
+  /** push-api was called and accepted the registration. */
+  | 'registered'
+  /** Nothing changed since a registration under 24 hours old: no request. */
+  | 'unchanged'
+  /**
+   * The extension does not hold the `notifications` permission, so nothing
+   * was subscribed or sent. The identity is remembered, and the SDK registers
+   * by itself when the permission is granted.
+   */
+  | 'permission_required'
+  /**
+   * `unsubscribe()` was called and `subscribe()` not since. Nothing was
+   * subscribed or sent; the identity is remembered for `subscribe()`.
+   */
+  | 'unsubscribed';
+
+export interface RegistrationResult {
+  status: RegistrationStatus;
+  /** push-api's id of the user. Absent for `permission_required` and `unsubscribed`. */
+  userId?: number;
+  /** push-api's id of this browser's endpoint. Absent for the same two. */
+  endpointId?: number;
+  /** The external id registered or asked for: the user's id, or `anon:<anonymousId>`. */
+  externalId: string;
+}
+
+/** What `getState()` resolves to. Read locally: no request is made. */
+export interface PushState {
+  /** Whether the extension holds the `notifications` permission right now. */
+  permission: 'granted' | 'missing';
+  /** The browser has a push subscription (`pushManager.getSubscription()`). */
+  subscribed: boolean;
+  /**
+   * That subscription was registered with push-api less than 24 hours ago,
+   * as far as this browser remembers. It does not ask the server.
+   */
+  registered: boolean;
+  /** `unsubscribe()` was called and `subscribe()` not since. */
+  optedOut: boolean;
+  /**
+   * Set while a push that arrives is not displayed: `opted_out` after
+   * `unsubscribe()`; `identity_change_pending` while the identity last asked
+   * for (`identify` / `reset`) is not the one the API last confirmed, which
+   * lasts for as long as that call keeps failing. Absent when notifications
+   * are displayed normally.
+   */
+  deliveryBlocked?: 'opted_out' | 'identity_change_pending';
+  /** push-api's ids from the last registration; only when `registered`. */
+  userId?: number;
+  endpointId?: number;
+  /**
+   * The external id of the last registration when `registered`; otherwise
+   * the one last asked for, if any.
+   */
+  externalId?: string;
+  /** The random id this browser registers under when no user is given. */
+  anonymousId: string;
+  /** ISO 8601 time of the last registration; only when `registered`. */
+  registeredAt?: string;
+  /** The API root in use, ending in `/v1`. */
+  apiBaseUrl: string;
+  sdkVersion: string;
 }
 
 export interface NotificationBadge {
@@ -124,15 +193,22 @@ export interface SubscriptionUserFields {
   last_name?: string;
 }
 
+/** `PushSubscription.toJSON()`. push-api ignores `expirationTime`. */
+export interface SubscriptionJson {
+  endpoint: string;
+  expirationTime: number | null;
+  keys: { p256dh: string; auth: string };
+}
+
 /** Body of `POST /v1/subscriptions`, as far as the SDK fills it. */
 export interface RegisterSubscriptionBody extends SubscriptionUserFields {
-  /** `PushSubscription.toJSON()`. push-api ignores `expirationTime`. */
-  subscription: {
-    endpoint: string;
-    expirationTime: number | null;
-    keys: { p256dh: string; auth: string };
-  };
+  subscription: SubscriptionJson;
   metadata: Record<string, string>;
+}
+
+/** Body of `DELETE /v1/subscriptions` and `POST /v1/subscriptions/test`. */
+export interface SubscriptionOnlyBody {
+  subscription: SubscriptionJson;
 }
 
 /**

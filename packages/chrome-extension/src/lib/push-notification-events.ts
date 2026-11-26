@@ -1,4 +1,5 @@
 import { ApiClient } from './api-client';
+import { hasNotificationsApi } from './notification-permission';
 import { NotificationsState } from './notifications-state';
 import { FeedbackEventType, NormalizedNotification } from './types';
 
@@ -28,21 +29,54 @@ export class PushNotificationEvents {
 
   private constructor() {}
 
-  /**
-   * The first access registers the `chrome.notifications` listeners, so it
-   * must happen at top-level service-worker startup. Later accesses add none.
-   */
+  private listening = false;
+
+  // Ids of the notifications this worker created. Together with the stored
+  // entries they say which notifications are the SDK's: the listeners below
+  // see every notification of the extension, and must leave alone the ones
+  // the extension made itself. In memory because an entry may be missing
+  // when storage could not be written; a notification from an earlier worker
+  // is known by its stored entry.
+  private created = new Set<string>();
+
   public static get instance() {
     if (!this.pushNotificationEvents) {
       this.pushNotificationEvents = new PushNotificationEvents();
-      this.pushNotificationEvents.listenForPushNotificationEvents();
     }
     return this.pushNotificationEvents;
+  }
+
+  /**
+   * Adds the `chrome.notifications` listeners, once per worker, if the API is
+   * there; resolves to whether they are in place. Called at top-level
+   * service-worker startup, and again wherever the API may have appeared
+   * since (the `notifications` permission was optional and has been granted).
+   */
+  public attachListeners(): boolean {
+    if (this.listening) {
+      return true;
+    }
+    if (!hasNotificationsApi()) {
+      return false;
+    }
+    this.listening = true;
+    this.listenForPushNotificationEvents();
+    return true;
   }
 
   /** Re-initialising the SDK swaps the client; the listeners stay as they are. */
   public configure(api: ApiClient) {
     this.api = api;
+  }
+
+  /** Called before `chrome.notifications.create`. */
+  public markCreated(notificationId: string) {
+    this.created.add(notificationId);
+  }
+
+  /** Ids created by this worker that have not been closed yet. */
+  public createdIds(): string[] {
+    return [...this.created];
   }
 
   /** Resolves when the post is done. Never rejects. */
@@ -60,7 +94,8 @@ export class PushNotificationEvents {
     // is already on its way must still find the id.
     this.programmaticallyCleared.add(notificationId);
     try {
-      chrome.notifications.clear(notificationId);
+      // Absent without the `notifications` permission: nothing is on screen.
+      chrome.notifications?.clear(notificationId);
     } catch (error) {
       console.warn('[PushTo] could not clear notification', error);
     }
@@ -94,11 +129,22 @@ export class PushNotificationEvents {
     // Read persisted state BEFORE removing and clearing it. The entry is in
     // chrome.storage.local, so a worker started by this very click finds it.
     let notification: NormalizedNotification | undefined;
+    let stored = false;
     try {
       notification =
         await NotificationsState.instance.getNotification(notificationId);
+      stored =
+        notification !== undefined ||
+        (await NotificationsState.instance.hasNotification(notificationId));
     } catch (error) {
       console.warn('[PushTo] could not read notification state', error);
+    }
+
+    // Not one of the SDK's: the extension's own notification. Nothing is
+    // cleared, opened or reported.
+    if (!stored && !this.created.has(notificationId)) {
+      this.programmaticallyCleared.delete(notificationId);
+      return;
     }
 
     const clicked = this.sendFeedback(notification?.notificationId, 'clicked');
@@ -106,7 +152,7 @@ export class PushNotificationEvents {
     await this.dismissSilently(notificationId);
 
     if (notification?.badge) {
-      clearBadge();
+      await clearBadge();
     }
 
     let opened: Promise<void> | undefined;
@@ -129,27 +175,38 @@ export class PushNotificationEvents {
     // A click, auto-dismiss or tag replacement called clear(), which is what
     // triggered this onClosed.
     const wasProgrammatic = this.programmaticallyCleared.delete(notificationId);
+    const wasCreatedHere = this.created.delete(notificationId);
+
+    // A failed read costs the `dismissed`, never the cleanup below.
+    let notification: NormalizedNotification | undefined;
+    let stored = false;
+    try {
+      notification =
+        await NotificationsState.instance.getNotification(notificationId);
+      stored =
+        notification !== undefined ||
+        (await NotificationsState.instance.hasNotification(notificationId));
+    } catch (error) {
+      console.warn('[PushTo] could not read notification state', error);
+    }
 
     // Only a close the user made is a dismissal: push-api counts `dismissed`
     // against what the user is sent, so a close by the system must not be
     // one. A notification without a stored entry (legacy, or already handled
-    // by a worker that has since died) reports nothing either.
-    let dismissed: Promise<void> | undefined;
-    if (!wasProgrammatic && byUser === true) {
-      // A failed read costs the `dismissed`, never the cleanup below.
-      let notification: NormalizedNotification | undefined;
-      try {
-        notification =
-          await NotificationsState.instance.getNotification(notificationId);
-      } catch (error) {
-        console.warn('[PushTo] could not read notification state', error);
-      }
-      dismissed = this.sendFeedback(notification?.notificationId, 'dismissed');
-    }
+    // by a worker that has since died) reports nothing either; neither does
+    // one the extension made itself, which has no entry.
+    const dismissed =
+      !wasProgrammatic && byUser === true
+        ? this.sendFeedback(notification?.notificationId, 'dismissed')
+        : undefined;
 
-    // Every terminal path funnels through onClosed, so this is the cleanup
-    // point that keeps persisted state from growing unbounded.
-    await NotificationsState.instance.removeNotification(notificationId);
+    // Every terminal path of an SDK notification funnels through onClosed,
+    // so this is the cleanup point that keeps persisted state from growing
+    // unbounded. Nothing is written for a notification that is not the
+    // SDK's.
+    if (stored || wasCreatedHere || wasProgrammatic) {
+      await NotificationsState.instance.removeNotification(notificationId);
+    }
     await dismissed;
   }
 
@@ -194,23 +251,55 @@ export class PushNotificationEvents {
   }
 }
 
-/** The toolbar badge only exists when the manifest has an `action` key. */
-export function clearBadge() {
-  setBadge('');
-}
+const BADGE_KEY = 'pt_badge';
 
-export function setBadge(text: string, color?: string) {
+/**
+ * Sets the toolbar badge for a notification's `data.badge`, and records that
+ * the badge is the SDK's, which is what allows {@link clearBadge} to clear
+ * it. Without the record the badge is not set: one that could never be
+ * cleared is worse than none. The toolbar badge only exists when the
+ * manifest has an `action` key.
+ */
+export async function setBadge(text: string, color?: string) {
+  if (!chrome.action) {
+    return;
+  }
   try {
-    void Promise.resolve(chrome.action?.setBadgeText({ text })).catch(
+    await chrome.storage.local.set({ [BADGE_KEY]: true });
+  } catch (error) {
+    console.warn('[PushTo] could not record the toolbar badge', error);
+    return;
+  }
+  try {
+    void Promise.resolve(chrome.action.setBadgeText({ text })).catch(
       () => undefined,
     );
     if (color) {
       void Promise.resolve(
-        chrome.action?.setBadgeBackgroundColor({ color }),
+        chrome.action.setBadgeBackgroundColor({ color }),
       ).catch(() => undefined);
     }
   } catch (error) {
     // An invalid color throws synchronously.
     console.warn('[PushTo] could not update the toolbar badge', error);
+  }
+}
+
+/**
+ * Clears the toolbar badge if the SDK set it and has not cleared it since.
+ * A badge the extension set itself is left alone. Never rejects.
+ */
+export async function clearBadge() {
+  try {
+    const stored = await chrome.storage.local.get(BADGE_KEY);
+    if (stored[BADGE_KEY] !== true) {
+      return;
+    }
+    await chrome.storage.local.remove(BADGE_KEY);
+    void Promise.resolve(chrome.action?.setBadgeText({ text: '' })).catch(
+      () => undefined,
+    );
+  } catch (error) {
+    console.warn('[PushTo] could not clear the toolbar badge', error);
   }
 }
