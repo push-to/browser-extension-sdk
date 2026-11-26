@@ -136,8 +136,14 @@ export class PushNotificationEvents {
     // by a worker that has since died) reports nothing either.
     let dismissed: Promise<void> | undefined;
     if (!wasProgrammatic && byUser === true) {
-      const notification =
-        await NotificationsState.instance.getNotification(notificationId);
+      // A failed read costs the `dismissed`, never the cleanup below.
+      let notification: NormalizedNotification | undefined;
+      try {
+        notification =
+          await NotificationsState.instance.getNotification(notificationId);
+      } catch (error) {
+        console.warn('[PushTo] could not read notification state', error);
+      }
       dismissed = this.sendFeedback(notification?.notificationId, 'dismissed');
     }
 

@@ -165,7 +165,7 @@ interface PushSubscriptionOptions {
 | --- | --- |
 | `apiKey` | A Push To API key. Use one **without** the `sending` / `admin` permission (see above). |
 | `defaultNotificationIcon` | Icon used for every notification. Wins over the notification's own `data.icon`. |
-| `apiBaseUrl` | Host of the Push To API, **without** `/v1` (the SDK appends it; a trailing slash is fine). Overrides the host the package was built with. Must be `https:` (`http:` is accepted for `localhost` / `127.0.0.1` only, because the key travels in a header) and have no query or fragment. An invalid value throws from the constructor. |
+| `apiBaseUrl` | Host of the Push To API, **without** `/v1` (the SDK appends it; a trailing slash is fine). Overrides the host the package was built with. Must be `https:` (`http:` is accepted for loopback hosts only: `localhost`, `*.localhost`, `127.0.0.1`, `[::1]`, because the key travels in a header) and have no query or fragment. An invalid value throws from the constructor. |
 | `vapidPublicKey` | The platform's VAPID public key (base64url). When omitted, the SDK reads it from `GET /v1/vapid-key` and keeps it in `chrome.storage.local` for up to 24 hours. |
 
 #### Methods
@@ -230,10 +230,12 @@ hash is unchanged and the registration is less than 24 hours old,
 `registerPushSubscription` makes no request. Only that one-way hash is kept:
 the SDK does not store `User.hash`, so pass it on every call.
 
-After 24 hours the call is sent again even if nothing changed, and the
-VAPID key is read again. That is how a device recovers from what it cannot
-see: a subscription the API disabled, a user removed on the server, a rotated
-VAPID key. Any full registration reads the VAPID key again as well.
+After 24 hours the call is sent again even if nothing changed. When
+`vapidPublicKey` is not configured, the VAPID key is read again then, and on
+any other full registration as well; a configured key is used as it is. That
+is how a device recovers from what it cannot see: a subscription the API
+disabled, a user removed on the server, a rotated VAPID key (a configured key
+that was rotated has to be changed in your code).
 
 **A subscription the API refuses.** If the API answers
 `409 endpoint_conflict` (the browser's push address is already registered
@@ -421,9 +423,11 @@ try {
 | `422` | `endpoint_limit_reached` | The user already has 20 active subscriptions. |
 | `503` | `identity_verification_unavailable` | The API deployment cannot check hashes at all. Not retried. |
 
-Two codes are the SDK's own: `network_error` (the
-request got no response within 10 seconds; `status` is `0`) and `http_error` (a response without
-the API's error body). A network error and a `503` are retried twice, with a
+Two codes are the SDK's own: `network_error` (the request failed, or got no
+response within 10 seconds; `status` is `0`) and `http_error` (a response without
+the API's error body). The 10-second timeout applies where `AbortSignal.timeout`
+exists (Chrome 103+); on an older Chrome only a failed request is a
+`network_error`. A network error and a `503` are retried twice, with a
 short backoff, before the call fails; nothing else is retried, and neither is
 `503 identity_verification_unavailable`, which trying again cannot fix. A failed
 registration is not remembered, so the next call sends it again.

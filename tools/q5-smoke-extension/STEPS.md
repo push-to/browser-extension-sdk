@@ -67,7 +67,7 @@ icon wins over it). **Do not commit that change.**
    Network tab shows **no request at all**: the registration and the VAPID key
    are both remembered for 24 hours.
 6. **It expires.** In the service worker console, age the stored registration,
-   then reload the extension: both requests of step 3 are sent again.
+   then reload the extension: both requests of step 1.3 are sent again.
 
    ```js
    const { pt_registration } = await chrome.storage.local.get('pt_registration');
@@ -211,9 +211,12 @@ for the notification is `delivered`.
 - **Unsafe URL.** Send the `javascript:` variant and click it: no tab opens,
   `clicked` is sent, `opened` is not.
 - **Icon.** With no `defaultNotificationIcon` in `background.js`, send the
-  `icon` variant: the notification shows that icon. Send one with no icon: the
-  harness manifest declares no `icons`, so the built-in transparent icon is
-  used and the notification must still appear.
+  `icon` variant and record whether the notification shows that icon or falls
+  back to the built-in one: the harness has no `host_permissions` for the
+  icon's host, so Chrome loading it is not guaranteed. Either way the
+  notification must appear. Send one with no icon: the harness manifest
+  declares no `icons`, so the built-in transparent icon is used and the
+  notification must still appear.
 
 ## 9. Tenant isolation sanity
 

@@ -15,6 +15,9 @@ export class ReceiveNotification {
   private static instance: ReceiveNotification;
   private defaultNotificationIcon?: string;
 
+  // See `display`: one notification at a time.
+  private queue: Promise<unknown> = Promise.resolve();
+
   // One function object each, added once per worker. Re-initialising the SDK
   // only changes what they read, so it can never leave a second listener.
   private readonly onPush = (event: PushEvent) =>
@@ -99,35 +102,12 @@ export class ReceiveNotification {
       options.requireInteraction = true;
     }
 
-    // Persist before showing, so a click that comes at once finds the entry.
-    // Storage is bookkeeping, though: if it fails (quota, a damaged profile)
-    // the notification is still shown, only without its click target and
-    // feedback.
-    try {
-      if (notification.tag) {
-        const replaced =
-          await NotificationsState.instance.removeNotificationsByTag(
-            notification.tag,
-            id,
-          );
-        for (const replacedId of replaced) {
-          PushNotificationEvents.instance.clearSilently(replacedId);
-        }
-      }
-      await NotificationsState.instance.addNotification(id, notification);
-    } catch (error) {
-      console.warn('[PushTo] could not persist the notification state', error);
-    }
-
-    const shown = await this.createWithIconFallback(
-      id,
-      options,
-      iconCandidates(this.defaultNotificationIcon, notification.icon),
-    );
-    if (!shown) {
-      await NotificationsState.instance
-        .removeNotification(id)
-        .catch(() => undefined);
+    // Feedback, auto-dismiss and badge stay out of the queue: a slow network
+    // must not delay the next notification.
+    const task = () => this.display(notification, options);
+    const result = this.queue.then(task, task);
+    this.queue = result.catch(() => undefined);
+    if (!(await result)) {
       return;
     }
 
@@ -150,6 +130,61 @@ export class ReceiveNotification {
     }
 
     await delivered;
+  }
+
+  /**
+   * Persists, shows, then replaces the notifications with the same tag.
+   * Resolves to whether the notification is on screen.
+   *
+   * Runs one notification at a time (see `showNotification`): two pushes with
+   * the same tag handled together would otherwise each look for the other
+   * before it is stored, and both would stay.
+   */
+  private async display(
+    notification: NormalizedNotification,
+    options: Omit<chrome.notifications.NotificationCreateOptions, 'iconUrl'>,
+  ): Promise<boolean> {
+    const { id, tag } = notification;
+
+    // Persist before showing, so a click that comes at once finds the entry.
+    // Storage is bookkeeping, though: if it fails (quota, a damaged profile)
+    // the notification is still shown, only without its click target and
+    // feedback.
+    try {
+      await NotificationsState.instance.addNotification(id, notification);
+    } catch (error) {
+      console.warn('[PushTo] could not persist the notification state', error);
+    }
+
+    const shown = await this.createWithIconFallback(
+      id,
+      options,
+      iconCandidates(this.defaultNotificationIcon, notification.icon),
+    );
+    if (!shown) {
+      await NotificationsState.instance
+        .removeNotification(id)
+        .catch(() => undefined);
+      return false;
+    }
+
+    // Only now: had the new one failed to show, the ones it replaces would
+    // have been taken away for nothing.
+    if (tag) {
+      try {
+        const replaced =
+          await NotificationsState.instance.removeNotificationsByTag(tag, id);
+        for (const replacedId of replaced) {
+          PushNotificationEvents.instance.clearSilently(replacedId);
+        }
+      } catch (error) {
+        console.warn(
+          '[PushTo] could not replace the notifications with the same tag',
+          error,
+        );
+      }
+    }
+    return true;
   }
 
   /**

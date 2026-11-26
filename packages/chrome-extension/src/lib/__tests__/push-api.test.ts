@@ -1094,6 +1094,37 @@ describe('payload handling', () => {
     expect(env.storage['pt_notifications']).toEqual({});
   });
 
+  test('a legacy id that names an Object.prototype member is stored and found again on click', async () => {
+    init();
+    const legacy = (correlationId: string) => ({
+      title: 'Legacy',
+      options: {
+        body: 'b',
+        data: { correlationId, link: `https://example.com/${correlationId}` },
+      },
+    });
+    const stored = () => env.storage['pt_notifications'];
+
+    for (const id of ['__proto__', 'toString']) {
+      // Nothing is stored yet: an inherited member is not an entry.
+      env.click(id);
+      await sleep(20);
+      expect(env.tabsCreateCalls).toEqual([]);
+
+      await env.push(legacy(id));
+      expect(Object.keys(stored())).toEqual([id]);
+      expect(Object.getPrototypeOf(stored())).toBe(Object.prototype);
+
+      env.click(id);
+      await sleep(20);
+      expect(env.tabsCreateCalls.splice(0)).toEqual([
+        { url: `https://example.com/${id}` },
+      ]);
+      expect(Object.keys(stored())).toEqual([]);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
   test('a payload that is neither shape does not throw out of the push handler: logged, nothing shown', async () => {
     init();
     const garbage: unknown[] = [
@@ -1486,7 +1517,10 @@ describe('feedback — POST /v1/feedback', () => {
       env.userClose(String(id + 100));
       await sleep(20);
 
-      expect(env.tabsCreateCalls.length).toBeGreaterThan(0); // the click still worked
+      // The click still worked, in this iteration.
+      expect(env.tabsCreateCalls.splice(0)).toEqual([
+        { url: 'https://example.com/' },
+      ]);
       expect(warnings.length).toBe(5); // delivered, clicked, opened, delivered, dismissed
       expect(String(warnings[0][0])).toContain('delivered');
     }

@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { ApiClient, PushToApiError, resolveApiBaseUrl } from '../api-client';
+import { PushNotificationStorage } from '../push-notification-storage';
 import { PushNotifications } from '../pushto-chrome-extension';
 import { REGISTRATION_MAX_AGE_MS, toUserBody } from '../register-subscription';
 import {
@@ -100,6 +101,58 @@ describe('storage failures (M1)', () => {
   });
 });
 
+describe('tag replacement', () => {
+  const stored = () => Object.keys(env.storage['pt_notifications'] ?? {});
+
+  test('a notification that cannot be shown leaves the one it would have replaced on screen and in storage', async () => {
+    init();
+    await push(5, { tag: 'grp' });
+    env.createError = () => 'Notifications permission missing';
+
+    await push(6, { tag: 'grp' });
+    await sleep(20);
+
+    expect([...env.active.keys()]).toEqual(['5']);
+    expect(stored()).toEqual(['5']);
+    expect(env.feedbackTypes(6)).toEqual([]);
+
+    // The survivor is still a tracked notification.
+    env.userClose('5');
+    await sleep(20);
+    expect(env.feedbackTypes(5)).toEqual(['delivered', 'dismissed']);
+    expect(unhandled).toEqual([]);
+  });
+
+  test('two pushes with the same tag handled at the same time end with one on screen and in storage', async () => {
+    init();
+
+    await Promise.all([push(7, { tag: 'grp' }), push(8, { tag: 'grp' })]);
+    await sleep(20);
+
+    expect([...env.active.keys()]).toEqual(['8']);
+    expect(stored()).toEqual(['8']);
+    expect(env.feedbackTypes(7)).toEqual(['delivered']);
+    expect(env.feedbackTypes(8)).toEqual(['delivered']);
+    expect(unhandled).toEqual([]);
+  });
+
+  test('a slow `delivered` post does not delay the next notification', async () => {
+    init();
+    env.intercept = async (call) => {
+      if (call.path === '/v1/feedback') await sleep(60);
+      return undefined;
+    };
+
+    const first = push(9, { tag: 'a' });
+    const second = push(14, { tag: 'b' });
+    await sleep(20);
+
+    expect([...env.active.keys()]).toEqual(['9', '14']);
+    expect(env.feedback().length).toBe(2); // both posts are still in flight
+    await Promise.all([first, second]);
+  });
+});
+
 describe('`dismissed` only for a close the user made (S2)', () => {
   test('byUser === true → dismissed', async () => {
     init();
@@ -130,6 +183,31 @@ describe('`dismissed` only for a close the user made (S2)', () => {
     env.notificationsOnClosed.listeners.forEach((l) => l('12'));
     await sleep(20);
     expect(env.feedbackTypes(12)).toEqual(['delivered']);
+  });
+});
+
+describe('close with unreadable state', () => {
+  test('a failed read on a user close still removes the stored entry', async () => {
+    init();
+    await push(13);
+    const get = (globalThis as any).chrome.storage.local.get;
+    let fail = true;
+    (globalThis as any).chrome.storage.local.get = async (key: string) => {
+      if (fail) {
+        fail = false;
+        throw new Error('storage unavailable');
+      }
+      return get(key);
+    };
+
+    env.userClose('13');
+    await sleep(20);
+
+    expect(env.storage['pt_notifications']).toEqual({});
+    expect(env.feedbackTypes(13)).toEqual(['delivered']); // what to report was unreadable
+    expect(warnings.length).toBe(1);
+    expect(String(warnings[0][0])).toContain('could not read');
+    expect(unhandled).toEqual([]);
   });
 });
 
@@ -476,10 +554,16 @@ describe('identity', () => {
     };
     const sdk = init({ vapidPublicKey: vapidKey(1) });
 
-    await Promise.all([
+    // Registrations run one at a time, so the two reads that overlap are
+    // made directly; the second registration differs so that it is sent.
+    const [a, b] = await Promise.all([
+      PushNotificationStorage.getAnonymousId(),
+      PushNotificationStorage.getAnonymousId(),
       sdk.registerPushSubscription(),
-      sdk.registerPushSubscription(),
+      sdk.registerPushSubscription({ email: 'a@example.com' }),
     ]);
+    expect(a).toBe(b);
+    expect(a).toBe(env.storage['pt_anonymousId']);
 
     const registrations = env.fetchCalls.filter(
       (c) => c.path === '/v1/subscriptions',
@@ -492,6 +576,61 @@ describe('identity', () => {
     expect(new Set(anonymousIds)).toEqual(
       new Set([env.storage['pt_anonymousId']]),
     );
+  });
+
+  test('two overlapping registrations for different users are sent in call order, and the last one is the one remembered', async () => {
+    const sdk = init({ vapidPublicKey: vapidKey(1) });
+    // The first answer is the slow one: unserialized, it would be stored last.
+    env.intercept = async (call) => {
+      if (String(call.body?.external_id).startsWith('anon:')) await sleep(40);
+      return undefined;
+    };
+
+    await Promise.all([
+      sdk.registerPushSubscription(),
+      sdk.registerPushSubscription({ id: 'user-1' }),
+    ]);
+
+    const sent = () =>
+      env.fetchCalls
+        .filter((c) => c.path === '/v1/subscriptions')
+        .map((c) => c.body.external_id);
+    expect(sent()).toEqual([`anon:${env.storage['pt_anonymousId']}`, 'user-1']);
+
+    env.intercept = undefined;
+    await sdk.registerPushSubscription({ id: 'user-1' });
+    expect(sent().length).toBe(2); // remembered: nothing sent
+    await sdk.registerPushSubscription();
+    expect(sent().length).toBe(3);
+  });
+
+  test('a registration that fails does not hold up the next one, and each caller gets its own result', async () => {
+    const sdk = init({ vapidPublicKey: vapidKey(1) });
+    env.intercept = (call) =>
+      call.body?.external_id === 'user-1'
+        ? jsonResponse(422, {
+            error: { code: 'validation_error', message: 'refused' },
+          })
+        : undefined;
+
+    const [first, second] = await Promise.allSettled([
+      sdk.registerPushSubscription({ id: 'user-1' }),
+      sdk.registerPushSubscription({ id: 'user-2' }),
+    ]);
+
+    expect(first.status).toBe('rejected');
+    expect((first as PromiseRejectedResult).reason).toMatchObject({
+      status: 422,
+      code: 'validation_error',
+    });
+    expect(second.status).toBe('fulfilled');
+    expect(unhandled).toEqual([]);
+
+    await sdk.registerPushSubscription({ id: 'user-2' });
+    expect(requests()).toEqual([
+      'POST /v1/subscriptions',
+      'POST /v1/subscriptions',
+    ]);
   });
 
   test('a failed anonymous-id read is not remembered', async () => {
@@ -545,6 +684,11 @@ describe('base URL limits', () => {
       'https://api.example.com/base?x=y/v1',
       'https://api.example.com#frag',
       'https://api.example.com/v1#frag',
+      // An empty one: `URL` reports no query or fragment for these.
+      'https://api.test?',
+      'https://api.test#',
+      'https://api.test/?',
+      'https://api.test/#',
     ]) {
       expect(() => resolveApiBaseUrl(bad, '')).toThrow(/apiBaseUrl/);
     }

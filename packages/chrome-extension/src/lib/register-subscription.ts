@@ -122,6 +122,12 @@ export class RegisterSubscription {
   /** Per worker: the warning for a `hash` without an `id` is logged once. */
   private static warnedHashWithoutId = false;
 
+  // One registration at a time: two that overlap (anonymous at startup, then
+  // identified) could finish out of order and leave the fingerprint of the
+  // earlier one, and the next call would be skipped for 24 hours. Static
+  // because `PushNotifications` makes a new instance for every call.
+  private static queue: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly api: ApiClient,
     private readonly apiKey: string,
@@ -135,8 +141,21 @@ export class RegisterSubscription {
    * The call is skipped when nothing it would send has changed since the last
    * successful registration and that one is under 24 hours old, so this is
    * cheap to call on every service-worker start: no request at all then.
+   *
+   * Calls run in the order they were made, each after the one before it has
+   * settled; a call that failed does not stop the next.
    */
-  public async registerPushSubscription(currentUrl: string, user?: User) {
+  public registerPushSubscription(
+    currentUrl: string,
+    user?: User,
+  ): Promise<void> {
+    const task = () => this.register(currentUrl, user);
+    const result = RegisterSubscription.queue.then(task, task);
+    RegisterSubscription.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  private async register(currentUrl: string, user?: User) {
     // Check if Service Worker is available
     if (typeof self === 'undefined' || !self.registration) {
       throw new Error(

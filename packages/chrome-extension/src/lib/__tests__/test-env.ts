@@ -149,7 +149,6 @@ export function installMocks() {
     click(id: string) {
       env.notificationsOnClicked.listeners.forEach((l) => l(id));
     },
-    /** The user closes a notification: onClosed with no clear() before it. */
     /** The system closes it: onClosed with `byUser` false, no clear(). */
     systemClose(id: string) {
       env.active.delete(id);
@@ -173,6 +172,7 @@ export function installMocks() {
         listeners.length = 0;
       }
     },
+    /** The user closes a notification: onClosed with no clear() before it. */
     userClose(id: string) {
       env.active.delete(id);
       env.notificationsOnClosed.listeners.forEach((l) => l(id, true));
@@ -214,7 +214,9 @@ export function installMocks() {
       });
     }
     if (hash !== undefined) {
-      // Over the exact string received: no trim, no case fold.
+      // The HMAC is over `external_id` exactly as received: no trim, no case
+      // fold. The hash's own hex digits compare case-insensitively, as on
+      // push-api.
       const valid =
         env.identitySecret !== undefined &&
         hash.toLowerCase() === (await userHash(env.identitySecret, externalId));
@@ -421,6 +423,13 @@ export function installMocks() {
 
 export type TestEnv = ReturnType<typeof installMocks>;
 
+// What api-client.ts ships with, read before any test changes it, so a test
+// that asserts a default checks the production value and not a copy of it.
+const API_CLIENT_DEFAULTS = {
+  maxRetries: ApiClient.maxRetries,
+  timeoutMs: ApiClient.timeoutMs,
+};
+
 /**
  * Resets every module's private static singleton so each test starts from a
  * state equivalent to a genuinely fresh MV3 service-worker instantiation (a
@@ -433,9 +442,12 @@ export function resetSingletons() {
   (Dismiss as any).dismiss = undefined;
   (PushNotificationEvents as any).pushNotificationEvents = undefined;
   (ReceiveNotification as any).instance = undefined;
-  ApiClient.maxRetries = 2;
+  ApiClient.maxRetries = API_CLIENT_DEFAULTS.maxRetries;
+  // Not the production default: the tests do not wait out a real backoff.
   ApiClient.retryBaseDelayMs = 1;
-  ApiClient.timeoutMs = 10_000;
+  ApiClient.timeoutMs = API_CLIENT_DEFAULTS.timeoutMs;
   (PushNotificationStorage as any).anonymousId = undefined;
   (RegisterSubscription as any).warnedHashWithoutId = false;
+  // A registration a test left hanging must not hold up the next test's.
+  (RegisterSubscription as any).queue = Promise.resolve();
 }

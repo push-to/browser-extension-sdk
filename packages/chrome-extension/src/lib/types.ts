@@ -5,7 +5,10 @@ export interface PushSubscriptionOptions {
   defaultNotificationIcon?: string;
   /**
    * push-api host, without `/v1` (the SDK appends it). Overrides the host the
-   * package was built with.
+   * package was built with. Must be an `https:` URL with no query or fragment;
+   * `http:` is accepted for loopback hosts only (`localhost`, `*.localhost`,
+   * `127.0.0.1`, `[::1]`), because the key travels in a header. Anything else
+   * throws from the constructor.
    */
   apiBaseUrl?: string;
   /**
@@ -80,7 +83,8 @@ export interface LegacyPushPayload {
     icon?: string;
     contextMessage?: string;
     data: {
-      correlationId: string;
+      /** A number is shown under its decimal string. */
+      correlationId: string | number;
       link?: string;
       badge?: NotificationBadge;
       tag?: string;

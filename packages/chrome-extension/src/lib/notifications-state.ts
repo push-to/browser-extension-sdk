@@ -2,6 +2,14 @@ import { fromStored } from './payload';
 import { NormalizedNotification } from './types';
 
 /**
+ * Ids come from push payloads, so one can be `__proto__` or `toString`: only
+ * an own property is an entry.
+ */
+function hasEntry(notifications: Record<string, unknown>, id: string) {
+  return Object.prototype.hasOwnProperty.call(notifications, id);
+}
+
+/**
  * Persistent store for in-flight notifications.
  *
  * MV3 service workers are ephemeral: an idle worker is terminated and a fresh
@@ -61,7 +69,14 @@ export class NotificationsState {
   ): Promise<void> {
     return this.serialize(async () => {
       const notifications = await this.readAll();
-      notifications[notificationId] = notification;
+      // Not an assignment: `notifications['__proto__'] = …` would set the
+      // object's prototype and store nothing.
+      Object.defineProperty(notifications, notificationId, {
+        value: notification,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
       await this.writeAll(notifications);
     });
   }
@@ -69,7 +84,7 @@ export class NotificationsState {
   public removeNotification(notificationId: string): Promise<void> {
     return this.serialize(async () => {
       const notifications = await this.readAll();
-      if (notificationId in notifications) {
+      if (hasEntry(notifications, notificationId)) {
         delete notifications[notificationId];
         await this.writeAll(notifications);
       }
@@ -81,7 +96,9 @@ export class NotificationsState {
   ): Promise<NormalizedNotification | undefined> {
     return this.serialize(async () => {
       const notifications = await this.readAll();
-      return fromStored(notifications[notificationId]);
+      return hasEntry(notifications, notificationId)
+        ? fromStored(notifications[notificationId])
+        : undefined;
     });
   }
 

@@ -49,16 +49,16 @@ export function resolveApiBaseUrl(
   }
   // The key travels in a header on every call: plain http is for a local
   // push-api only. A query or fragment would end up in the middle of the
-  // request URLs.
+  // request URLs; the raw `?` / `#` is looked for because `URL` reports an
+  // empty one (`https://host?`) as no query at all.
   const valid =
     url !== undefined &&
-    !url.search &&
-    !url.hash &&
+    !/[?#]/.test(host) &&
     (url.protocol === 'https:' ||
       (url.protocol === 'http:' && isLoopback(url.hostname)));
   if (!valid) {
     throw new Error(
-      'PushNotifications: no valid API base URL. Pass `apiBaseUrl` (an https URL without /v1, query or fragment; http is accepted for localhost only) or build the package with PUSHTO_CORE_URL set.',
+      'PushNotifications: no valid API base URL. Pass `apiBaseUrl` (an https URL without /v1, query or fragment; http is accepted for loopback hosts only) or build the package with PUSHTO_CORE_URL set.',
     );
   }
   return host + API_VERSION_PATH;
