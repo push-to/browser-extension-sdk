@@ -169,14 +169,15 @@ describe('registration — POST /v1/subscriptions', () => {
       },
     });
     expect(Object.keys(env.storage['pt_registration']).sort()).toEqual([
-      'endpointHash',
       'endpointId',
       'externalId',
       'fingerprint',
       'registeredAt',
+      'subscriptionHash',
       'userId',
     ]);
-    // The address itself is not stored, only its hash.
+    // The address and the keys themselves are not stored, only their hash.
+    expect(JSON.stringify(env.storage)).not.toContain('p256dh-1');
     expect(JSON.stringify(env.storage)).not.toContain('fcm.googleapis.com');
     expect(env.storage['pt_registration'].fingerprint).toMatch(
       /^[0-9a-f]{64}$/,
@@ -253,7 +254,7 @@ describe('registration — POST /v1/subscriptions', () => {
       external_id: 'u',
       user_hash: hash,
     });
-    expect(toUserBody({ id: 7 as any, hash: ` ${hash}\n` }, 'a1')).toEqual({
+    expect(toUserBody({ id: 7, hash: ` ${hash}\n` }, 'a1')).toEqual({
       external_id: '7',
       user_hash: hash,
     });
@@ -380,7 +381,7 @@ describe('registration — POST /v1/subscriptions', () => {
       hash: vector,
     });
     await init().registerPushSubscription({
-      id: 42 as any,
+      id: 42,
       hash: await userHash(IDENTITY_SECRET, '42'),
     });
     // Case and inner whitespace are part of the id.

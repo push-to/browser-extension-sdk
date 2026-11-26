@@ -227,6 +227,10 @@ export function installMocks() {
       ]) {
         listeners.length = 0;
       }
+      // A worker that starts while the permission is held has the API.
+      if (env.notificationsGranted) {
+        (globalThis as any).chrome.notifications = notificationsApi;
+      }
     },
     /** The browser is closed and opened again: session storage is gone too. */
     restartBrowser() {
@@ -491,8 +495,14 @@ export function installMocks() {
         (query.permissions ?? []).every(
           (name) => name !== 'notifications' || env.notificationsGranted,
         ),
+      // A grant changes what `contains` answers. It does not put
+      // `chrome.notifications` in the running worker or fire `onAdded`:
+      // `grantNotifications` models those.
       request: (query: any) => {
         env.permissionRequestCalls.push(query);
+        if (env.permissionRequestAnswer) {
+          env.notificationsGranted = true;
+        }
         return Promise.resolve(env.permissionRequestAnswer);
       },
       onAdded: env.permissionsOnAdded,
@@ -622,4 +632,5 @@ export function resetSingletons() {
   (RegisterSubscription as any).warnedHashWithoutId = false;
   // A registration a test left hanging must not hold up the next test's.
   (RegisterSubscription as any).queue = Promise.resolve();
+  (ReceiveNotification as any).queue = Promise.resolve();
 }

@@ -74,6 +74,14 @@ export class PushNotificationEvents {
     this.created.add(notificationId);
   }
 
+  /**
+   * For an id whose `chrome.notifications.create` failed: nothing is on
+   * screen, so no `onClosed` will ever take it out of the set.
+   */
+  public unmarkCreated(notificationId: string) {
+    this.created.delete(notificationId);
+  }
+
   /** Ids created by this worker that have not been closed yet. */
   public createdIds(): string[] {
     return [...this.created];
@@ -180,6 +188,7 @@ export class PushNotificationEvents {
     // A failed read costs the `dismissed`, never the cleanup below.
     let notification: NormalizedNotification | undefined;
     let stored = false;
+    let unread = false;
     try {
       notification =
         await NotificationsState.instance.getNotification(notificationId);
@@ -187,6 +196,7 @@ export class PushNotificationEvents {
         notification !== undefined ||
         (await NotificationsState.instance.hasNotification(notificationId));
     } catch (error) {
+      unread = true;
       console.warn('[PushTo] could not read notification state', error);
     }
 
@@ -203,9 +213,10 @@ export class PushNotificationEvents {
     // Every terminal path of an SDK notification funnels through onClosed,
     // so this is the cleanup point that keeps persisted state from growing
     // unbounded. Nothing is written for a notification that is not the
-    // SDK's.
-    if (stored || wasCreatedHere || wasProgrammatic) {
-      await NotificationsState.instance.removeNotification(notificationId);
+    // SDK's: when the read above failed the id may be one, so the removal is
+    // attempted, and it reads again and writes only if it finds an entry.
+    if (stored || wasCreatedHere || wasProgrammatic || unread) {
+      await this.forget(notificationId);
     }
     await dismissed;
   }
@@ -258,7 +269,7 @@ const BADGE_KEY = 'pt_badge';
  * the badge is the SDK's, which is what allows {@link clearBadge} to clear
  * it. Without the record the badge is not set: one that could never be
  * cleared is worse than none. The toolbar badge only exists when the
- * manifest has an `action` key.
+ * manifest has an `action` key. Never rejects.
  */
 export async function setBadge(text: string, color?: string) {
   if (!chrome.action) {
@@ -270,17 +281,15 @@ export async function setBadge(text: string, color?: string) {
     console.warn('[PushTo] could not record the toolbar badge', error);
     return;
   }
+  // Awaited, so that the event that set the badge keeps the worker alive
+  // until Chrome has it.
   try {
-    void Promise.resolve(chrome.action.setBadgeText({ text })).catch(
-      () => undefined,
-    );
+    await chrome.action.setBadgeText({ text });
     if (color) {
-      void Promise.resolve(
-        chrome.action.setBadgeBackgroundColor({ color }),
-      ).catch(() => undefined);
+      // An invalid color throws synchronously.
+      await chrome.action.setBadgeBackgroundColor({ color });
     }
   } catch (error) {
-    // An invalid color throws synchronously.
     console.warn('[PushTo] could not update the toolbar badge', error);
   }
 }
@@ -295,10 +304,10 @@ export async function clearBadge() {
     if (stored[BADGE_KEY] !== true) {
       return;
     }
+    // The record goes only once the badge is cleared: a clear that failed is
+    // made again by the next event that clears.
+    await chrome.action?.setBadgeText({ text: '' });
     await chrome.storage.local.remove(BADGE_KEY);
-    void Promise.resolve(chrome.action?.setBadgeText({ text: '' })).catch(
-      () => undefined,
-    );
   } catch (error) {
     console.warn('[PushTo] could not clear the toolbar badge', error);
   }

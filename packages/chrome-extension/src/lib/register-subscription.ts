@@ -147,6 +147,21 @@ async function currentSubscription(): Promise<PushSubscription | null> {
   }
 }
 
+/**
+ * What `getState()` compares with the cached registration: the address and
+ * both keys, because push-api holds all three and a change of any of them
+ * makes what it holds stale.
+ */
+function hashSubscription(subscription: SubscriptionJson): Promise<string> {
+  return sha256Hex(
+    JSON.stringify([
+      subscription.endpoint,
+      subscription.keys.p256dh,
+      subscription.keys.auth,
+    ]),
+  );
+}
+
 function isEndpointConflict(error: unknown) {
   return (
     error instanceof PushToApiError &&
@@ -406,11 +421,13 @@ export class RegisterSubscription {
       sdkVersion: SDK_VERSION,
     };
 
+    // An entry without the hash (written by 1.0.0) is not `registered`.
+    const current = subscription ? toSubscriptionJson(subscription) : undefined;
     if (
-      subscription &&
+      current &&
       registration?.externalId !== undefined &&
       isFresh(registration.registeredAt, Date.now()) &&
-      registration.endpointHash === (await sha256Hex(subscription.endpoint))
+      registration.subscriptionHash === (await hashSubscription(current))
     ) {
       state.registered = true;
       state.externalId = registration.externalId;
@@ -565,9 +582,10 @@ export class RegisterSubscription {
 
     const externalId = request.body.external_id;
     // The API has now moved this browser away from another identified user.
-    // Their notifications were cleared when the change was asked for; this
-    // catches one that was already on its way to the screen then, and a
-    // change that was asked for by an earlier call that failed.
+    // Their notifications were cleared when the change was asked for, and
+    // none was displayed since; this catches what is on screen all the same
+    // (the identity could not be stored then, so nothing was cleared or held
+    // back), and a change that was asked for by an earlier call that failed.
     if (
       stored?.externalId !== undefined &&
       stored.externalId !== externalId &&
@@ -580,7 +598,7 @@ export class RegisterSubscription {
       registeredAt: now,
       ...ids,
       externalId,
-      endpointHash: await sha256Hex(subscription.endpoint),
+      subscriptionHash: await hashSubscription(request.body.subscription),
     });
     return { status: 'registered', ...ids, externalId };
   }

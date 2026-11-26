@@ -20,10 +20,11 @@ export interface PushSubscriptionOptions {
 
 export interface User {
   /**
-   * Your own id for the signed-in user; sent as push-api's `external_id`.
-   * Required by `identify`. Without it the subscriber is anonymous.
+   * Your own id for the signed-in user; sent as push-api's `external_id` (a
+   * number as its decimal string). Required by `identify`. Without it the
+   * subscriber is anonymous.
    */
-  id?: string;
+  id?: string | number;
   /**
    * Identity proof (`user_hash`) for `id`, computed by **your server**:
    * `hex(HMAC-SHA256(identity_secret, id))`, over the `id` exactly as the SDK
@@ -48,7 +49,11 @@ export type RegistrationStatus =
   /**
    * The extension does not hold the `notifications` permission, so nothing
    * was subscribed or sent. The identity is remembered, and the SDK registers
-   * by itself when the permission is granted.
+   * by itself when the permission is granted. The exception: an identity
+   * given with more than an `id` (`hash`, `email`, …) after the browser has
+   * restarted. Those fields are kept for the browser session only, so the
+   * SDK does not register without them; the application's `identify` at
+   * startup does.
    */
   | 'permission_required'
   /**
@@ -83,9 +88,11 @@ export interface PushState {
   /**
    * Set while a push that arrives is not displayed: `opted_out` after
    * `unsubscribe()`; `identity_change_pending` while the identity last asked
-   * for (`identify` / `reset`) is not the one the API last confirmed, which
-   * lasts for as long as that call keeps failing. Absent when notifications
-   * are displayed normally.
+   * for (`identify` / `reset`) is not the one the API last confirmed. That
+   * is a sign-out or a switch of user the API has not confirmed, and also an
+   * identity whose first registration has not succeeded yet (as with
+   * `status: 'permission_required'`); it lasts for as long as that call
+   * keeps failing. Absent when notifications are displayed normally.
    */
   deliveryBlocked?: 'opted_out' | 'identity_change_pending';
   /** push-api's ids from the last registration; only when `registered`. */

@@ -284,6 +284,16 @@ Delivery is a separate matter, and this is exactly what holds:
   rejects (offline), call it again on the next service-worker start; until
   it succeeds this browser shows no notifications at all. When it does
   succeed, the screen is cleared once more.
+- **Until the first registration has succeeded** the same holds. Once you
+  have called `identify` / `reset`, nothing that arrives is displayed until
+  a registration for that identity has succeeded: while the call resolves
+  with `permission_required`, while a first `identify` keeps being refused,
+  and between `subscribe()` and its registration after an `unsubscribe()`.
+  Nothing the API sends to that identity can arrive before its registration
+  exists; what is held back was addressed to whoever this browser was
+  registered for before. A browser updated from 1.0 is the exception: the
+  registration 1.0 cached does not say whom it was for, so nothing is held
+  back until the first registration made by this version.
 - **What can still be displayed:** a notification the API sent to the
   previous user *before* it confirmed the change, which the push service
   delivers to this browser only afterwards (the device was asleep or
@@ -309,7 +319,7 @@ interface RegistrationResult {
 | --- | --- |
 | `registered` | The API was called and accepted the registration. |
 | `unchanged` | Nothing changed since a registration under 24 hours old: no request was made. The ids are the ones of that registration. |
-| `permission_required` | The extension does not hold the `notifications` permission. Nothing was sent; `userId` and `endpointId` are absent. The SDK registers by itself when the permission is granted. |
+| `permission_required` | The extension does not hold the `notifications` permission. Nothing was sent; `userId` and `endpointId` are absent. The SDK registers by itself when the permission is granted, with one exception: an identity given with more than an `id` (`hash`, `email`, …) after the browser has restarted is registered by your `identify` at startup instead (see [Path B](#path-b-an-extension-that-already-has-users), step 4). |
 | `unsubscribed` | `unsubscribe()` was called and `subscribe()` not since. Nothing was subscribed or sent; `userId` and `endpointId` are absent. The identity is remembered, and `subscribe()` registers it. |
 
 `userId` is the `user_id` you pass to `POST /v1/notifications` to send to
@@ -768,7 +778,7 @@ its own alarms and storage keys.
 
 | Listener | What it does |
 | --- | --- |
-| `push` (on the service worker) | Handles **every** push message the worker receives. One in the Push To shape is displayed; anything else is logged with `console.warn` and ignored. |
+| `push` (on the service worker) | Handles **every** push message the worker receives. Push To and legacy payloads are displayed; unknown shapes are logged with `console.warn` and ignored. |
 | `chrome.notifications.onClicked` | Only for a notification the SDK showed: clears it, opens `data.url` in a new tab, reports `clicked` / `opened`, and clears the SDK's badge if the notification set one. A click on a notification your extension created itself is ignored: nothing is cleared, opened or reported. |
 | `chrome.notifications.onClosed` (two listeners) | Only for a notification the SDK showed: reports `dismissed` when the user closed it, and removes the SDK's stored entry and auto-dismiss alarm. For any other notification nothing is reported or stored. |
 | `chrome.alarms.onAlarm` | Acts only on alarms whose name starts with `pt-dismiss:`; every other alarm is ignored. |
@@ -818,7 +828,7 @@ memory only).
 | Key | Content |
 | --- | --- |
 | `pt_anonymousId` | The random UUID of this browser's anonymous subscriber. Never deleted by the SDK. |
-| `pt_registration` | The last successful registration: its time, a SHA-256 of everything that was sent (not the data itself), the ids the API answered (`userId`, `endpointId`), the external id, and a SHA-256 of the subscription's address. |
+| `pt_registration` | The last successful registration: its time, a SHA-256 of everything that was sent (not the data itself), the ids the API answered (`userId`, `endpointId`), the external id, and a SHA-256 of the subscription's address and keys. |
 | `pt_identity` | Which identity was last asked for: the user's `id` (absent for the anonymous subscriber) and whether more than the id was given. `{}` after `reset()`. Kept by `unsubscribe()`: it is what `subscribe()` registers. |
 | `pt_vapidKey` | The VAPID public key read from the API, for up to 24 hours. |
 | `pt_optedOut` | `true` after `unsubscribe()`, until `subscribe()`. |
@@ -898,7 +908,7 @@ entry):
 
 ```ts
 interface User {
-  id?: string;       // required by identify()
+  id?: string | number; // required by identify()
   hash?: string;     // identity proof for `id`, computed by your server
   email?: string;
   name?: string;
@@ -934,7 +944,7 @@ nothing.
 
 | `User` field | Sent as |
 | --- | --- |
-| `id` | `external_id`, with surrounding whitespace trimmed. Without an `id` the SDK sends `anon:<anonymousId>`, so registering again reaches the same anonymous user instead of creating a new one. |
+| `id` | `external_id`: a string with surrounding whitespace trimmed, a number as its decimal string. Without an `id` the SDK sends `anon:<anonymousId>`, so registering again reaches the same anonymous user instead of creating a new one. |
 | `hash` | `user_hash`, only when an `id` is given. A `hash` without an `id` is dropped, with one `console.warn`. See [Identity verification](#identity-verification). |
 | `email` | user `email`. Must be a valid address, or the API answers `422`. |
 | `name` | split on the first run of whitespace into user `first_name` and `last_name` (`"Jane van der Berg"` → `Jane` / `van der Berg`; a single word is only a `first_name`). |
@@ -1002,11 +1012,15 @@ host has not been verified; if it does not, the fallback applies, and adding
 the host to `host_permissions` (or using `defaultNotificationIcon` with a
 packaged image) is the way to get your icon.
 
-A push message in any other shape is logged with `console.warn` and ignored.
-Nothing is shown and nothing is reported either for a message that arrives
-while the extension does not hold the `notifications` permission, after
-`unsubscribe()`, or while a change of user has not been confirmed by the API
-(see [Shared computers](#identity)).
+A message in the previous backend's shape is displayed too (see
+[From 0.0.x](#from-00x)); one in any other shape is logged with
+`console.warn` and ignored. Nothing is shown and nothing is reported either
+for a message that arrives while the extension does not hold the
+`notifications` permission, after `unsubscribe()`, or while the first
+registration or a change of user has not been confirmed by the API (see
+[Shared computers](#identity)). The same goes for a message that arrives
+while the SDK cannot read that state from `chrome.storage.local`: it is
+logged with `console.warn` and not shown.
 
 #### Events sent
 
@@ -1087,7 +1101,10 @@ never confirmed, so this browser displays no notifications at all (see
 [Shared computers](#identity)). Handle the rejection, and check
 `(await pushTo.getState()).deliveryBlocked`: it is `'identity_change_pending'`
 in that state, `'opted_out'` after `unsubscribe()`, and absent when
-notifications are displayed normally.
+notifications are displayed normally. It is also
+`'identity_change_pending'` while the identity you asked for has no
+successful registration yet, which includes a browser waiting for the
+`notifications` permission (`status: 'permission_required'`).
 
 `identify` rejects with a plain `TypeError` when `user.id` is missing.
 `unsubscribe` does not reject for an API failure (see
@@ -1122,7 +1139,10 @@ behaves differently:
   notification with `data.badge`.
 - When the signed-in user changes, and on `unsubscribe()`, the SDK's
   notifications still on screen are taken away. While a change of user has
-  not been confirmed by the API, incoming notifications are not displayed.
+  not been confirmed by the API, incoming notifications are not displayed;
+  the same goes for an identity whose first registration has not succeeded
+  yet. A browser that 1.0 had registered is not affected by that second
+  rule: its notifications keep being displayed across the update.
 - `unsubscribe()` and `subscribe()` are new. After `unsubscribe()`, only
   `subscribe()` registers again.
 - `@types/chrome` and `@types/node` are no longer installed with the
@@ -1168,7 +1188,11 @@ to the Push To API (`/v1`), and that changes a few things:
 - **Legacy notifications are shown but not tracked.** While the previous
   backend still pushes to old subscriptions, the SDK keeps displaying its
   messages (title, body, icon, link, badge, tag, auto-dismiss), and sends no
-  event for them.
+  event for them. One gap: from your first `identify` / `reset` after the
+  update until that first registration with the new API has succeeded
+  (normally a moment; longer while it fails or waits for the permission),
+  nothing is displayed, legacy messages included (see
+  [Shared computers](#identity)).
 - **Tracking.** `POST /notifications/track` is replaced by `POST /v1/feedback`
   with the events [listed above](#events-sent). There is no `auto-dismissed`
   event any more.

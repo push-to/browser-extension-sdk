@@ -11,6 +11,8 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { PushToApiError } from '../api-client';
+import { hasNotificationsPermission } from '../notification-permission';
+import { PushNotificationEvents } from '../push-notification-events';
 import { PushNotifications } from '../pushto-chrome-extension';
 import * as publicApi from '../../index';
 import * as pageApi from '../../page';
@@ -318,7 +320,7 @@ describe('identify / reset', () => {
     });
 
     env.userId = 43;
-    const numeric = await init().identify({ id: 7 as any });
+    const numeric = await init().identify({ id: 7 });
     expect(numeric.externalId).toBe('7');
     expect(numeric.userId).toBe(43);
   });
@@ -435,16 +437,20 @@ describe('getState', () => {
     expect(env.fetchCalls).toEqual([]);
   });
 
-  test('waiting for the permission: the external id asked for', async () => {
+  test('waiting for the permission: the external id asked for, and delivery is held until its first registration succeeds', async () => {
     env.withoutNotificationsPermission();
     const pushTo = init();
     await pushTo.identify({ id: 'user-1' });
 
+    // `deliveryBlocked` was absent here before: an identity without any
+    // cached registration is now `identity_change_pending`, because nothing
+    // that arrives before the first registration can be for that identity.
     expect(await pushTo.getState()).toEqual({
       permission: 'missing',
       subscribed: false,
       registered: false,
       optedOut: false,
+      deliveryBlocked: 'identity_change_pending',
       externalId: 'user-1',
       ...base(),
     });
@@ -1411,7 +1417,10 @@ describe('pushes are not displayed while they cannot be for the person at the br
     expect(env.active.has('3')).toBe(true);
   });
 
-  test('a state that cannot be read does not cost the notification', async () => {
+  // This test expected the notification to be shown. The gate is what keeps
+  // a previous user's push off the screen after a sign-out or an
+  // unsubscribe, so it now fails closed: unreadable state shows nothing.
+  test('a state that cannot be read shows nothing: the gate fails closed, with a warning', async () => {
     init();
     const get = (globalThis as any).chrome.storage.local.get;
     (globalThis as any).chrome.storage.local.get = async (key: string) => {
@@ -1420,8 +1429,20 @@ describe('pushes are not displayed while they cannot be for the person at the br
       }
       return get(key);
     };
-    await push(1);
-    expect(env.active.has('1')).toBe(true);
+
+    expect(await push(1)).toBe(1);
+
+    expect(env.createCalls).toEqual([]);
+    expect(env.fetchCalls).toEqual([]);
+    expect(env.storage['pt_notifications']).toBeUndefined();
+    expect(warnings.length).toBe(1);
+    expect(String(warnings[0][0])).toContain('delivery state');
+    expect((warnings[0][1] as Error).message).toBe('storage unavailable');
+
+    // Readable again: shown again.
+    (globalThis as any).chrome.storage.local.get = get;
+    await push(2);
+    expect(env.active.has('2')).toBe(true);
   });
 });
 
@@ -1811,5 +1832,535 @@ describe('third review', () => {
     expect((await pushTo.getState()).deliveryBlocked).toBe('opted_out');
     await pushTo.subscribe();
     expect('deliveryBlocked' in (await pushTo.getState())).toBe(false);
+  });
+});
+
+describe('fourth review', () => {
+  const GRANTED = { type: 'pushto:permission-granted' };
+  const chromeMock = () => (globalThis as any).chrome;
+  const push = (id: number, data: object = {}) =>
+    env.push({ title: 't', body: 'b', notification_id: id, data });
+  /** A push of the backend before push-api. */
+  const legacyPush = (correlationId: string) =>
+    env.push({ title: 't', options: { body: 'b', data: { correlationId } } });
+  const offline = () => {
+    env.intercept = (call) => {
+      if (call.path !== '/v1/feedback') {
+        throw new TypeError('Failed to fetch');
+      }
+      return undefined;
+    };
+  };
+  const toolbarClick = async () => {
+    env.actionOnClicked.listeners.forEach((l) => l());
+    await sleep(10);
+  };
+  /** `chrome.notifications.create` takes `ms` to put it on screen. */
+  const slowCreate = (ms: number) => {
+    const create = chromeMock().notifications.create;
+    chromeMock().notifications.create = (...args: any[]) => {
+      setTimeout(() => create(...args), ms);
+    };
+  };
+
+  test('an identity without any cached registration holds delivery back: after unsubscribe(), subscribe() shows nothing until its registration succeeds', async () => {
+    const pushTo = init();
+    await pushTo.identify({ id: 'user-1' });
+    await pushTo.unsubscribe();
+    let release: () => void = () => undefined;
+    env.intercept = async (call) => {
+      if (call.method === 'POST' && call.path === '/v1/subscriptions') {
+        await new Promise<void>((resolve) => (release = resolve));
+      }
+      return undefined;
+    };
+
+    const subscribing = pushTo.subscribe();
+    await sleep(10);
+    // The opt-out is over, and the API has not confirmed anything yet.
+    expect(env.storage['pt_optedOut']).toBeUndefined();
+    expect(env.storage['pt_registration']).toBeUndefined();
+    expect((await pushTo.getState()).deliveryBlocked).toBe(
+      'identity_change_pending',
+    );
+    await push(1);
+    expect(env.createCalls).toEqual([]);
+    expect(env.feedback()).toEqual([]);
+    expect(String(warnings.at(-1)?.[0])).toContain('first registration');
+
+    release();
+    expect((await subscribing).status).toBe('registered');
+    expect('deliveryBlocked' in (await pushTo.getState())).toBe(false);
+    await push(2);
+    expect(env.active.has('2')).toBe(true);
+  });
+
+  test('upgrade from 1.0.0 (a cached registration that does not say whom it was for, no stored identity): pushes are displayed before, while and after the first registration, also when it fails', async () => {
+    env.storage['pt_registration'] = {
+      fingerprint: 'f'.repeat(64),
+      registeredAt: Date.now() - HOUR,
+    };
+    const pushTo = init();
+    await push(1);
+    expect(env.active.has('1')).toBe(true);
+
+    offline();
+    await pushTo.identify({ id: 'user-1' }).catch(() => undefined);
+    expect(env.storage['pt_identity']).toEqual({ id: 'user-1' });
+    expect(env.storage['pt_registration'].externalId).toBeUndefined();
+    expect('deliveryBlocked' in (await pushTo.getState())).toBe(false);
+    await push(2);
+    expect(env.active.has('2')).toBe(true);
+
+    env.intercept = undefined;
+    expect((await pushTo.identify({ id: 'user-1' })).status).toBe('registered');
+    await push(3);
+    expect([...env.active.keys()]).toEqual(['1', '2', '3']);
+  });
+
+  test('upgrade from 0.0.x (no cached registration at all): a legacy push is displayed before an identity is asked for, held back while the first registration has not succeeded, and displayed once it has', async () => {
+    const pushTo = init();
+    await legacyPush('legacy-1');
+    expect(env.active.has('legacy-1')).toBe(true);
+
+    offline();
+    await pushTo.reset().catch(() => undefined);
+    expect((await pushTo.getState()).deliveryBlocked).toBe(
+      'identity_change_pending',
+    );
+    await legacyPush('legacy-2');
+    expect(env.active.has('legacy-2')).toBe(false);
+
+    env.intercept = undefined;
+    expect((await pushTo.reset()).status).toBe('registered');
+    await legacyPush('legacy-3');
+    expect([...env.active.keys()]).toEqual(['legacy-1', 'legacy-3']);
+  });
+
+  test('a notification that could not be created is not kept as one this worker created', async () => {
+    init();
+    env.createError = () => 'Unable to download all specified images.';
+    await push(1);
+    await push(2);
+    expect(env.active.size).toBe(0);
+    expect(PushNotificationEvents.instance.createdIds()).toEqual([]);
+
+    env.createError = () => undefined;
+    await push(3);
+    expect(PushNotificationEvents.instance.createdIds()).toEqual(['3']);
+  });
+
+  test('test-env: `exposeApi: false` keeps chrome.notifications away until the worker restarts, and a restart without the permission does not bring it', () => {
+    env.withoutNotificationsPermission();
+    init();
+    env.restartWorker();
+    expect(chromeMock().notifications).toBeUndefined();
+
+    env.grantNotifications({ exposeApi: false });
+    expect(chromeMock().notifications).toBeUndefined();
+
+    env.restartWorker();
+    init();
+    expect(chromeMock().notifications).toBeDefined();
+    expect(notificationListeners()).toEqual({ clicked: 1, closed: 2 });
+  });
+
+  test('test-env: the mocked permissions.request grants the permission when it answers true, without putting chrome.notifications in the running worker; the page helper alone gets the browser registered', async () => {
+    env.withoutNotificationsPermission();
+    const pushTo = init();
+    await pushTo.identify({ id: 'user-1' });
+
+    env.permissionRequestAnswer = false;
+    expect(await pageApi.requestNotificationPermission()).toBe(false);
+    expect(env.notificationsGranted).toBe(false);
+
+    env.permissionRequestAnswer = true;
+    expect(await pageApi.requestNotificationPermission()).toBe(true);
+    await sleep(20);
+    expect(env.notificationsGranted).toBe(true);
+    expect(chromeMock().notifications).toBeUndefined();
+    expect(notificationListeners()).toEqual({ clicked: 0, closed: 0 });
+    expect(await pushTo.getState()).toMatchObject({
+      permission: 'granted',
+      subscribed: true,
+      registered: true,
+      externalId: 'user-1',
+    });
+
+    env.restartWorker();
+    init();
+    await push(1);
+    expect(env.active.has('1')).toBe(true);
+  });
+
+  test('requestNotificationPermission with a chrome.permissions.request that only answers through its callback: called synchronously, resolves to what the callback is given', async () => {
+    const calls: any[][] = [];
+    let answer: unknown = true;
+    chromeMock().permissions.request = (...args: any[]) => {
+      calls.push(args);
+      setTimeout(() => args[1](answer), 5);
+      return undefined;
+    };
+
+    const pending = pageApi.requestNotificationPermission();
+    // Before anything was awaited: still inside the user gesture.
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toEqual({ permissions: ['notifications'] });
+    expect(typeof calls[0][1]).toBe('function');
+    expect(await pending).toBe(true);
+    expect(env.sentMessages).toEqual([GRANTED]);
+
+    answer = false;
+    expect(await pageApi.requestNotificationPermission()).toBe(false);
+    answer = undefined;
+    expect(await pageApi.requestNotificationPermission()).toBe(false);
+    expect(env.sentMessages).toEqual([GRANTED]);
+  });
+
+  test('requestNotificationPermission with a chrome.permissions.request that returns a promise and ignores the callback', async () => {
+    chromeMock().permissions.request = () => Promise.resolve(true);
+    expect(await pageApi.requestNotificationPermission()).toBe(true);
+    expect(env.sentMessages).toEqual([GRANTED]);
+
+    chromeMock().permissions.request = () => Promise.resolve(false);
+    expect(await pageApi.requestNotificationPermission()).toBe(false);
+
+    chromeMock().permissions.request = () =>
+      Promise.reject(new Error('The request was refused'));
+    const error = await pageApi.requestNotificationPermission().catch((e) => e);
+    expect(error.message).toBe('The request was refused');
+    expect(env.sentMessages).toEqual([GRANTED]);
+  });
+
+  test('requestNotificationPermission settles once when the callback and the promise both answer, and rejects for chrome.runtime.lastError', async () => {
+    chromeMock().permissions.request = (
+      _query: unknown,
+      callback: (granted: boolean) => void,
+    ) => {
+      callback(true);
+      return Promise.resolve(true);
+    };
+    expect(await pageApi.requestNotificationPermission()).toBe(true);
+    await sleep(5);
+    expect(env.sentMessages).toEqual([GRANTED]);
+
+    env.sentMessages.length = 0;
+    chromeMock().permissions.request = (
+      _query: unknown,
+      callback: (granted?: boolean) => void,
+    ) => {
+      chromeMock().runtime.lastError = {
+        message: 'This function must be called during a user gesture',
+      };
+      callback(undefined);
+      chromeMock().runtime.lastError = undefined;
+      return undefined;
+    };
+    const error = await pageApi.requestNotificationPermission().catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('user gesture');
+    expect(env.sentMessages).toEqual([]);
+  });
+
+  test('hasNotificationsPermission reads the callback form and the promise form of chrome.permissions.contains, and falls back to the presence of the API when neither answers', async () => {
+    const queries: unknown[] = [];
+    let held: unknown = true;
+
+    // Only the callback answers.
+    chromeMock().permissions.contains = (
+      query: unknown,
+      callback: (result: unknown) => void,
+    ) => {
+      queries.push(query);
+      setTimeout(() => callback(held), 1);
+      return undefined;
+    };
+    expect(await hasNotificationsPermission()).toBe(true);
+    expect(queries).toEqual([{ permissions: ['notifications'] }]);
+    held = false; // the API is there, and `contains` still decides
+    expect(await hasNotificationsPermission()).toBe(false);
+
+    // Only the promise answers.
+    chromeMock().permissions.contains = () => Promise.resolve(held);
+    expect(await hasNotificationsPermission()).toBe(false);
+    held = true;
+    expect(await hasNotificationsPermission()).toBe(true);
+
+    // Both answer.
+    chromeMock().permissions.contains = (
+      _query: unknown,
+      callback: (result: unknown) => void,
+    ) => {
+      callback(true);
+      return Promise.resolve(true);
+    };
+    expect(await hasNotificationsPermission()).toBe(true);
+
+    // No answer to trust: the presence of the API decides.
+    const unanswered = [
+      (_query: unknown, callback: (result: unknown) => void) => {
+        chromeMock().runtime.lastError = { message: 'permissions failed' };
+        callback(undefined);
+        chromeMock().runtime.lastError = undefined;
+      },
+      () => Promise.reject(new Error('permissions failed')),
+      () => {
+        throw new Error('permissions failed');
+      },
+    ];
+    for (const contains of unanswered) {
+      chromeMock().permissions.contains = contains;
+      expect(await hasNotificationsPermission()).toBe(true);
+    }
+    delete chromeMock().notifications;
+    for (const contains of unanswered) {
+      chromeMock().permissions.contains = contains;
+      expect(await hasNotificationsPermission()).toBe(false);
+    }
+  });
+
+  test('a Chrome whose permissions.contains only has the callback form registers when the permission is held, and waits when it is not', async () => {
+    // Called without a callback it answers nothing, as that Chrome does.
+    chromeMock().permissions.contains = (
+      _query: unknown,
+      callback?: (result: boolean) => void,
+    ) => {
+      callback?.(env.notificationsGranted);
+    };
+
+    expect((await init().identify({ id: 'user-1' })).status).toBe('registered');
+    expect((await init().getState()).permission).toBe('granted');
+
+    env.withoutNotificationsPermission();
+    env.storage['pt_registration'].registeredAt -= 25 * HOUR;
+    expect((await init().identify({ id: 'user-1' })).status).toBe(
+      'permission_required',
+    );
+  });
+
+  test('the badge calls are finished before the event that made them is', async () => {
+    init();
+    const done: string[] = [];
+    chromeMock().action.setBadgeText = async (o: { text: string }) => {
+      await sleep(15);
+      done.push(`text:${o.text}`);
+    };
+    chromeMock().action.setBadgeBackgroundColor = async (o: {
+      color: string;
+    }) => {
+      await sleep(15);
+      done.push(`color:${o.color}`);
+    };
+
+    await push(1, { badge: { text: '3', color: '#f00' } });
+    expect(done).toEqual(['text:3', 'color:#f00']);
+
+    // The click handler's own promise, as the listener starts it.
+    await (PushNotificationEvents.instance as any).handleNotificationClick('1');
+    expect(done).toEqual(['text:3', 'color:#f00', 'text:']);
+  });
+
+  test('a clear of the badge that fails keeps the record, so the next clearing event clears it; a failing chrome.action never costs the notification', async () => {
+    init();
+    await push(1, { badge: { text: '3' } });
+    const setBadgeText = chromeMock().action.setBadgeText;
+    let fail = true;
+    chromeMock().action.setBadgeText = async (o: { text: string }) => {
+      if (fail) {
+        throw new Error('action unavailable');
+      }
+      return setBadgeText(o);
+    };
+
+    await toolbarClick();
+    expect(env.badgeTextCalls).toEqual(['3']);
+    expect(env.storage['pt_badge']).toBe(true);
+    expect(String(warnings.at(-1)?.[0])).toContain('clear the toolbar badge');
+
+    fail = false;
+    await toolbarClick();
+    expect(env.badgeTextCalls).toEqual(['3', '']);
+    expect(env.storage['pt_badge']).toBeUndefined();
+
+    fail = true;
+    await push(2, { badge: { text: '4' } });
+    expect(env.active.has('2')).toBe(true);
+    expect(env.feedbackTypes(2)).toEqual(['delivered']);
+    expect(String(warnings.at(-1)?.[0])).toContain('update the toolbar badge');
+  });
+
+  test("a close whose state read fails in a later worker still removes the SDK's entry, writes nothing for another notification, and never rejects", async () => {
+    init();
+    await push(1);
+    await push(2);
+    env.restartWorker();
+    init();
+    const get = chromeMock().storage.local.get;
+    let failures = 1;
+    chromeMock().storage.local.get = async (key: string) => {
+      if (failures > 0) {
+        failures--;
+        throw new Error('storage unavailable');
+      }
+      return get(key);
+    };
+
+    // Not created by this worker, and its entry could not be read.
+    env.systemClose('1');
+    await sleep(20);
+    expect(Object.keys(env.storage['pt_notifications'])).toEqual(['2']);
+
+    // The extension's own notification: the removal finds nothing to write.
+    const writes: unknown[] = [];
+    const set = chromeMock().storage.local.set;
+    chromeMock().storage.local.set = async (value: Record<string, any>) => {
+      writes.push(value);
+      return set(value);
+    };
+    env.active.set('my-own', {});
+    failures = 1;
+    env.userClose('my-own');
+    await sleep(20);
+    expect(writes).toEqual([]);
+    expect(env.feedback().map((c) => c.body.event_type)).toEqual([
+      'delivered',
+      'delivered',
+    ]);
+
+    // Storage stays unreadable: the removal fails too, and is only logged.
+    failures = Infinity;
+    env.userClose('2');
+    await sleep(20);
+    expect(warnings.map((w) => String(w[0])).slice(-2)).toEqual([
+      '[PushTo] could not read notification state',
+      '[PushTo] could not remove notification state',
+    ]);
+    expect(
+      warnings.some((w) => String(w[0]).includes('close handler failed')),
+    ).toBe(false);
+  });
+
+  test('getState: the same address with another key is not `registered`, and neither is a cached entry without the hash of the subscription', async () => {
+    const pushTo = init();
+    await pushTo.identify({ id: 'user-1' });
+    expect((await pushTo.getState()).registered).toBe(true);
+
+    const toJSON = env.subscription.toJSON;
+    for (const keys of [
+      { p256dh: 'rotated', auth: 'auth-1' },
+      { p256dh: 'p256dh-1', auth: 'rotated' },
+    ]) {
+      env.subscription.toJSON = () => ({ ...toJSON(), keys });
+      expect(await pushTo.getState()).toMatchObject({
+        subscribed: true,
+        registered: false,
+        externalId: 'user-1',
+      });
+    }
+    env.subscription.toJSON = toJSON;
+    expect((await pushTo.getState()).registered).toBe(true);
+
+    delete env.storage['pt_registration'].subscriptionHash;
+    expect((await pushTo.getState()).registered).toBe(false);
+  });
+
+  test('a display in flight when reset() runs is gone afterwards, with its stored entry and its badge', async () => {
+    const pushTo = init();
+    await pushTo.identify({ id: 'user-1' });
+    slowCreate(30);
+
+    const displaying = push(1, { badge: { text: '5' } });
+    await sleep(5);
+    // Past the delivery check, and not on screen yet.
+    expect(env.storage['pt_notifications']['1']).toBeDefined();
+    expect(env.active.size).toBe(0);
+
+    await pushTo.reset();
+    await displaying;
+    await sleep(20);
+
+    expect(env.active.size).toBe(0);
+    expect(env.storage['pt_notifications']).toEqual({});
+    expect(env.badgeTextCalls).toEqual(['5', '']);
+    expect(env.storage['pt_badge']).toBeUndefined();
+    // It was on screen for a moment; taking it away is not a dismissal.
+    expect(env.feedbackTypes(1)).toEqual(['delivered']);
+  });
+
+  test('a display in flight when unsubscribe() runs is gone afterwards, and a later push is not displayed', async () => {
+    const pushTo = init();
+    await pushTo.reset();
+    slowCreate(30);
+
+    const displaying = push(1);
+    await sleep(5);
+    expect(env.active.size).toBe(0);
+
+    await pushTo.unsubscribe();
+    await displaying;
+    await sleep(20);
+    expect(env.active.size).toBe(0);
+    expect(env.storage['pt_notifications']).toEqual({});
+
+    await push(2);
+    await sleep(40);
+    expect(env.active.size).toBe(0);
+  });
+
+  test('a push whose delivery check is still reading when unsubscribe() runs does not end up on screen', async () => {
+    const pushTo = init();
+    await pushTo.identify({ id: 'user-1' });
+    // The check has read "not opted out" and waits for the identity…
+    const get = chromeMock().storage.local.get;
+    let slow = true;
+    chromeMock().storage.local.get = async (key: string) => {
+      if (slow && key === 'pt_identity') {
+        slow = false;
+        await sleep(30);
+      }
+      return get(key);
+    };
+    // …while push-api takes longer than that to answer the unsubscribe, so
+    // the cached registration is still there when the check goes on.
+    env.intercept = async (call) => {
+      if (call.method === 'DELETE') {
+        await sleep(60);
+      }
+      return undefined;
+    };
+
+    const displaying = push(1);
+    await sleep(5);
+    await pushTo.unsubscribe();
+    await displaying;
+    await sleep(20);
+
+    expect(env.active.size).toBe(0);
+    expect(env.storage['pt_notifications']).toEqual({});
+  });
+
+  test('a registration that clears the screen and a display wait for each other in one direction only: neither call hangs', async () => {
+    const pushTo = init();
+    await pushTo.identify({ id: 'user-1' });
+    slowCreate(10);
+
+    // Displays queued before, between and after three calls that clear.
+    const settled = await Promise.race([
+      Promise.all([
+        push(1),
+        pushTo.identify({ id: 'user-2' }),
+        push(2),
+        pushTo.reset(),
+        push(3),
+        pushTo.unsubscribe(),
+        push(4),
+      ]).then(() => 'settled'),
+      sleep(2000).then(() => 'hung'),
+    ]);
+    await sleep(30);
+
+    expect(settled).toBe('settled');
+    expect(env.active.size).toBe(0);
+    expect(env.storage['pt_notifications']).toEqual({});
   });
 });

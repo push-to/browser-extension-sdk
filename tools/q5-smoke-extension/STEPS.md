@@ -250,8 +250,8 @@ with the Chrome version; each "record" below is an open question.
    - Record: `typeof chrome.notifications` (expected `"undefined"`).
    - `await pushTo.getState()` → `permission: "missing"`, `subscribed: false`,
      `registered: false`, `externalId: "anon:…"`.
-   - `await chrome.storage.local.get('pt_identity')` → `{ details: true }`
-     only; the harness's email is in
+   - `await chrome.storage.local.get('pt_identity')` →
+     `{ pt_identity: { details: true } }` only; the harness's email is in
      `await chrome.storage.session.get('pt_identity')`.
 3. Open `chrome-extension://<extension-id>/permission.html` in a tab and
    click **Enable notifications**. Accept Chrome's prompt. The page shows
@@ -349,7 +349,7 @@ With the extension registered (step 1, or step 10.4):
    with `network_error`), go back online **without** calling `reset()`
    again, and send to the `q5-user` id: the API reports `sent`, **nothing is
    displayed**, no feedback is posted, and the console shows
-   `[PushTo] a push message arrived while a change of user is not yet registered: nothing is shown`.
+   `[PushTo] a push message arrived while the first registration or a change of user is not yet confirmed by the API: nothing is shown`.
    Then `await pushTo.reset()` → `registered`; a send to the anonymous
    `userId` is displayed.
 

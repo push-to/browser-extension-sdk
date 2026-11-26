@@ -8,12 +8,13 @@ export interface StoredRegistration {
   registeredAt: number;
   /**
    * What push-api answered, the external id sent, and the SHA-256 of the
-   * subscription's address. An entry written by 1.0.0 has none of them.
+   * subscription's address and both of its keys. An entry written by 1.0.0
+   * has none of them.
    */
   userId?: number;
   endpointId?: number;
   externalId?: string;
-  endpointHash?: string;
+  subscriptionHash?: string;
 }
 
 /**
@@ -171,8 +172,8 @@ export class PushNotificationStorage {
     if (typeof value.externalId === 'string') {
       registration.externalId = value.externalId;
     }
-    if (typeof value.endpointHash === 'string') {
-      registration.endpointHash = value.endpointHash;
+    if (typeof value.subscriptionHash === 'string') {
+      registration.subscriptionHash = value.subscriptionHash;
     }
     return registration;
   }
@@ -319,11 +320,15 @@ export class PushNotificationStorage {
    *
    * - `opted_out`: `unsubscribe()` was called and `subscribe()` not since.
    * - `identity_change_pending`: the identity asked for is not the one the
-   *   API last confirmed, so a sign-out or a switch of user is still waiting
-   *   for the API, and what arrives is addressed to whoever was registered
-   *   before. Nothing for the new identity can arrive before its
-   *   registration succeeds. Not applied when either side is unknown (no
-   *   identity asked for, or a registration cached by 1.0.0).
+   *   API last confirmed. Either a sign-out or a switch of user is still
+   *   waiting for the API, or there is no cached registration at all: the
+   *   first one has not succeeded yet, or the cache was deleted
+   *   (`unsubscribe()`, a removed permission) and no registration has
+   *   succeeded since. In both cases what arrives is addressed to whoever
+   *   was registered before: nothing for the identity asked for can arrive
+   *   before its registration succeeds. Not applied when a side is unknown:
+   *   no identity was ever asked for, or the registration was cached by
+   *   1.0.0, which did not store whom it was for.
    */
   public static async deliveryBlock(): Promise<DeliveryBlock | undefined> {
     if (await this.isOptedOut()) {
@@ -333,7 +338,13 @@ export class PushNotificationStorage {
       this.getIdentity(),
       this.getRegistration(),
     ]);
-    if (!identity || registration?.externalId === undefined) {
+    if (!identity) {
+      return undefined;
+    }
+    if (!registration) {
+      return 'identity_change_pending';
+    }
+    if (registration.externalId === undefined) {
       return undefined;
     }
     const wanted = identity.id ?? `anon:${await this.getAnonymousId()}`;

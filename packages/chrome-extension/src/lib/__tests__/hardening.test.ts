@@ -531,10 +531,10 @@ describe('subscription without an exposed key (S7)', () => {
 
 describe('identity', () => {
   test('a finite numeric id is an identity, not anonymous', () => {
-    expect(toUserBody({ id: 12345 as unknown as string }, 'a1')).toEqual({
+    expect(toUserBody({ id: 12345 }, 'a1')).toEqual({
       external_id: '12345',
     });
-    expect(toUserBody({ id: 0 as unknown as string }, 'a1')).toEqual({
+    expect(toUserBody({ id: 0 }, 'a1')).toEqual({
       external_id: '0',
     });
     for (const notAnId of [NaN, Infinity, {}, [], true, null]) {

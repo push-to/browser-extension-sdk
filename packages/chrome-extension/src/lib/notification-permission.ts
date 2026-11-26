@@ -10,6 +10,9 @@
  *   documented, so listeners are attached wherever the API is first seen.
  * - Whether the permission is held is asked of `chrome.permissions.contains`
  *   when that exists, and read from the presence of the API otherwise.
+ * - `chrome.permissions.contains` is called with a callback, and a promise
+ *   it returns is used too: the reference dates its promise form from
+ *   Chrome 96, and the callback form is older.
  */
 
 const NOTIFICATIONS = 'notifications';
@@ -29,19 +32,42 @@ export function hasNotificationsApi(): boolean {
 
 export async function hasNotificationsPermission(): Promise<boolean> {
   try {
-    // Typed here: the promise form is not in every @types/chrome.
+    // Typed here: the call is made with a callback and its return value is
+    // looked at as well, which no overload in @types/chrome describes.
     const permissions = chrome.permissions as
-      | { contains?: (query: { permissions: string[] }) => Promise<boolean> }
+      | {
+          contains?: (
+            query: { permissions: string[] },
+            callback: (result: unknown) => void,
+          ) => unknown;
+        }
       | undefined;
     if (typeof permissions?.contains === 'function') {
-      return (
-        (await permissions.contains({ permissions: [NOTIFICATIONS] })) === true
-      );
+      const contains = permissions.contains.bind(permissions);
+      // Whichever answers first, the callback or the promise, decides.
+      const result = await new Promise<unknown>((resolve, reject) => {
+        const returned = contains({ permissions: [NOTIFICATIONS] }, (held) => {
+          const error = chrome.runtime?.lastError;
+          if (error) {
+            reject(new Error(error.message ?? 'unknown error'));
+          } else {
+            resolve(held);
+          }
+        });
+        if (isThenable(returned)) {
+          returned.then(resolve, reject);
+        }
+      });
+      return result === true;
     }
   } catch {
     // answered below
   }
   return hasNotificationsApi();
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return typeof (value as { then?: unknown } | null)?.then === 'function';
 }
 
 interface PermissionHandlers {
