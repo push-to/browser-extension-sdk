@@ -102,6 +102,18 @@ export class NotificationsState {
     });
   }
 
+  /** Whether an entry exists, readable or not: the id is the SDK's. */
+  public hasNotification(notificationId: string): Promise<boolean> {
+    return this.serialize(async () =>
+      hasEntry(await this.readAll(), notificationId),
+    );
+  }
+
+  /** The ids of every notification the SDK has on screen. */
+  public listIds(): Promise<string[]> {
+    return this.serialize(async () => Object.keys(await this.readAll()));
+  }
+
   /**
    * Removes every entry with this tag except `exceptId`, and returns the ids
    * removed so the caller can clear them from the screen.

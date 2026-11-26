@@ -1,3 +1,4 @@
+import { hasNotificationsApi } from './notification-permission';
 import { PushNotificationEvents } from './push-notification-events';
 
 const ALARM_PREFIX = 'pt-dismiss:';
@@ -26,7 +27,8 @@ const MIN_ALARM_DELAY_MS = 30_000;
 export class Dismiss {
   private static dismiss: Dismiss;
   private shortTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private listenersRegistered = false;
+  private alarmListenerRegistered = false;
+  private closeListenerRegistered = false;
 
   private constructor() {}
 
@@ -40,27 +42,31 @@ export class Dismiss {
   /**
    * Register the top-level `onAlarm`/`onClosed` listeners. Called on every SW
    * startup so a worker re-woken by an alarm it never scheduled still handles
-   * it. Idempotent — the listeners are added at most once per worker instance.
+   * it. Idempotent — each listener is added at most once per worker instance.
+   * The `onClosed` one needs `chrome.notifications`, which is absent until an
+   * optional `notifications` permission is granted: it is added by the first
+   * call that finds the API.
    */
   public registerListeners() {
-    if (this.listenersRegistered) {
-      return;
+    if (!this.alarmListenerRegistered && chrome.alarms?.onAlarm) {
+      this.alarmListenerRegistered = true;
+      chrome.alarms.onAlarm.addListener((alarm) => {
+        if (!alarm.name.startsWith(ALARM_PREFIX)) {
+          return;
+        }
+        const notificationId = alarm.name.slice(ALARM_PREFIX.length);
+        this.fireDismissIfPresent(notificationId).catch(logFailure);
+      });
     }
-    this.listenersRegistered = true;
 
-    chrome.alarms.onAlarm.addListener((alarm) => {
-      if (!alarm.name.startsWith(ALARM_PREFIX)) {
-        return;
-      }
-      const notificationId = alarm.name.slice(ALARM_PREFIX.length);
-      this.fireDismissIfPresent(notificationId).catch(logFailure);
-    });
-
-    // When a notification is closed/clicked before its dismiss time, cancel the
-    // pending alarm so it doesn't needlessly re-wake the worker later.
-    chrome.notifications.onClosed.addListener((notificationId) => {
-      this.handleNotificationClose(notificationId).catch(logFailure);
-    });
+    if (!this.closeListenerRegistered && hasNotificationsApi()) {
+      this.closeListenerRegistered = true;
+      // When a notification is closed/clicked before its dismiss time, cancel
+      // the pending alarm so it doesn't needlessly re-wake the worker later.
+      chrome.notifications.onClosed.addListener((notificationId) => {
+        this.handleNotificationClose(notificationId).catch(logFailure);
+      });
+    }
   }
 
   public async handleTimedAutoDismiss(notificationId: string, delayMs: number) {
@@ -81,7 +87,7 @@ export class Dismiss {
   }
 
   public async handleNotificationClose(notificationId: string) {
-    await chrome.alarms.clear(ALARM_PREFIX + notificationId);
+    await chrome.alarms?.clear(ALARM_PREFIX + notificationId);
 
     const timer = this.shortTimers.get(notificationId);
     if (timer) {
@@ -109,6 +115,9 @@ export class Dismiss {
   }
 
   private async getActiveNotificationIds(): Promise<string[]> {
+    if (!hasNotificationsApi()) {
+      return [];
+    }
     return new Promise((resolve) => {
       chrome.notifications.getAll((notificationsObj) => {
         resolve(Object.keys(notificationsObj ?? {}));

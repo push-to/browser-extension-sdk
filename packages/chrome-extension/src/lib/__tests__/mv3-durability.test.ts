@@ -169,7 +169,7 @@ describe('NotificationsState (3.3a) — chrome.storage.local persistence', () =>
     expect(env.storage['pt_notifications']?.['5']?.id).toBe('5');
   });
 
-  test('a click on a notification stored by 0.0.16 still opens its link and clears the badge, and is not tracked', async () => {
+  test("a click on a notification stored by 0.0.16 still opens its link and is not tracked; its badge, which no marker says is the SDK's, is left alone", async () => {
     env.storage['pt_notifications'] = {
       'old-2': {
         title: 'Old',
@@ -191,7 +191,8 @@ describe('NotificationsState (3.3a) — chrome.storage.local persistence', () =>
     await sleep(20);
 
     expect(env.tabsCreateCalls).toEqual([{ url: 'https://example.com/old' }]);
-    expect(env.badgeTextCalls).toContain('');
+    // Versions before 1.1 did not record that they set the badge.
+    expect(env.badgeTextCalls).toEqual([]);
     expect(env.feedback().length).toBe(0);
     expect(env.storage['pt_notifications']?.['old-2']).toBeUndefined();
   });

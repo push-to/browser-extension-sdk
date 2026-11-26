@@ -1,5 +1,9 @@
 import { API_VERSION_PATH, CORE_URL } from './constants';
-import { FeedbackEvent, RegisterSubscriptionBody } from './types';
+import {
+  FeedbackEvent,
+  RegisterSubscriptionBody,
+  SubscriptionOnlyBody,
+} from './types';
 
 /**
  * A failed push-api call. `code`, `message` and `details` come from the
@@ -158,13 +162,54 @@ export class ApiClient {
 
   /**
    * Finds or creates the user by `external_id` and registers the push
-   * subscription for it, in one call. The answer is not read: nothing the SDK
-   * does depends on the ids in it.
+   * subscription for it, in one call. Resolves to the two ids push-api
+   * answers with; one that is missing or not a number is left out.
    */
   public async registerSubscription(
     body: RegisterSubscriptionBody,
-  ): Promise<void> {
-    await this.request('POST', '/subscriptions', { body });
+  ): Promise<{ userId?: number; endpointId?: number }> {
+    const answer = await this.request<{
+      user_id?: unknown;
+      endpoint_id?: unknown;
+    }>('POST', '/subscriptions', { body });
+    const ids: { userId?: number; endpointId?: number } = {};
+    if (typeof answer?.user_id === 'number') {
+      ids.userId = answer.user_id;
+    }
+    if (typeof answer?.endpoint_id === 'number') {
+      ids.endpointId = answer.endpoint_id;
+    }
+    return ids;
+  }
+
+  /**
+   * Disables this subscription on push-api. The keys are sent because they
+   * are the proof that the caller is the browser the address belongs to.
+   * Answers `204` whether or not anything matched.
+   */
+  public async deleteSubscription(body: SubscriptionOnlyBody): Promise<void> {
+    await this.request('DELETE', '/subscriptions', { body });
+  }
+
+  /** Asks push-api for one fixed-content test push to this subscription. */
+  public async sendTestNotification(
+    body: SubscriptionOnlyBody,
+  ): Promise<{ notificationId: number }> {
+    const answer = await this.request<{ notification_id?: unknown }>(
+      'POST',
+      '/subscriptions/test',
+      // Not sent twice: if the answer to a first attempt was lost, a second
+      // one would only find the cooldown that attempt started.
+      { body, retry: false },
+    );
+    if (typeof answer?.notification_id !== 'number') {
+      throw new PushToApiError({
+        status: 200,
+        code: 'invalid_response',
+        message: 'POST /subscriptions/test answered without a notification_id',
+      });
+    }
+    return { notificationId: answer.notification_id };
   }
 
   /**
@@ -178,9 +223,9 @@ export class ApiClient {
   }
 
   private async request<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
-    options: { body?: unknown; keepalive?: boolean } = {},
+    options: { body?: unknown; keepalive?: boolean; retry?: boolean } = {},
   ): Promise<T | undefined> {
     const init: RequestInit = {
       method,
@@ -196,8 +241,9 @@ export class ApiClient {
       init.keepalive = true;
     }
 
+    const maxRetries = options.retry === false ? 0 : ApiClient.maxRetries;
     let lastError: PushToApiError | undefined;
-    for (let attempt = 0; attempt <= ApiClient.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
         await sleep(ApiClient.retryBaseDelayMs * 2 ** (attempt - 1));
       }
