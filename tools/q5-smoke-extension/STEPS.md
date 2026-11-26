@@ -1,184 +1,232 @@
-# Wave 1 — Q5 real-device MV3 smoke — manual steps
+# Q5 real-device MV3 smoke — manual steps (push-api)
 
-Scope: `core/docs/Specs/Phase 3 - PRD.md` §Wave 1, item 3.3f (Q5) + risk R3 +
-acceptance criteria 1 and 2. Uses the real, built `@push-to/chrome-extension`
-SDK (vendored in `vendor/pushto-chrome-extension.js`, rebuilt from the
-current `feat/wave-1-mv3-hardening` tree — includes the W1-G fix, see step 5
-below), pointed at the live production core (`https://api.pushto.ai`) since
-Wave 0's broadcast correlation scheme is deployed there.
+A real-Chrome check of what the mocked tests
+(`packages/chrome-extension/src/lib/__tests__/`) cannot prove: MV3 wake-event
+dispatch after the service worker has been terminated, and the round trip
+through push-api (`core/apps/push-api`).
 
-**Status: the mocked-chrome unit checks (`src/lib/__tests__/mv3-durability.test.ts`)
-found a HIGH-severity regression (click/close listeners not wired at
-top-level SW init) and it has since been fixed in-source and re-verified
-(8/8 tests green, build+typecheck green). Step 5 below is now a
-*confirmation* that the fix holds on a real device, not a bug hunt — but
-still worth running since mocked tests can't fully substitute for real
-Chrome MV3 wake-event semantics.
+> **The vendored bundle is stale.** `vendor/pushto-chrome-extension.js` was
+> built from 0.0.16 and still talks to the previous backend
+> (`/subscriptions`, `/notifications/track`). Rebuild and re-copy it (step 0)
+> before running anything below. Do not hand-edit it.
 
-**Blocker: needs a real PushTo admin API key.** `POST /notifications` is
-`admin: true` in `apps/supabase-functions/.../notifications/router.ts`. None
-was available in this environment (no key found in local env/`.env` files
-anywhere under `~/dev/push-to`) — do not fake or guess one. Ask the lead for
-a test key, then follow the steps below.
-
-## 0. Set the key
-
-Edit `background.js` locally, replace:
-```js
-const PUSHTO_API_KEY = 'REPLACE_WITH_REAL_ADMIN_API_KEY';
-```
-with the real key. **Do not commit this change** — this repo's working tree
-already carries an unrelated uncommitted Wave 1 diff; never stage/commit
-anything in it.
-
-## 1. Load the extension
-
-1. `chrome://extensions` → enable **Developer mode**.
-2. **Load unpacked** → select `tools/q5-smoke-extension/`.
-3. Click **service worker** on the extension's card to open its DevTools
-   console.
-4. Confirm no errors on load, and (once the key is set) see
-   `[PT-Q5] registerPushSubscription OK` and, in the Network tab,
-   `POST https://api.pushto.ai/subscriptions` → 200.
-   - This alone proves R3: `pushManager.subscribe()` (called internally by
-     `registerPushSubscription`) works in an MV3 background SW with only
-     `notifications`/`alarms`/`storage` permissions, no `gcm_sender_id`.
-   - It also exercises 3.3c (`{ email }`, no `id`) — confirm no 422.
-
-## 2. Killing the SW — primary tool is `chrome://serviceworker-internals`
-
-Every step below that needs to force-terminate the background worker (to get
-a genuinely fresh, no-prior-listeners realm rather than just a "still warm"
-one) uses this:
-
-1. Open `chrome://serviceworker-internals` in a tab (or
-   `chrome://serviceworker-internals/?devtools` to auto-open DevTools).
-2. Find this extension's worker (origin is
-   `chrome-extension://<extension-id>/`, extension id shown on its
-   `chrome://extensions` card).
-3. Click **Stop** to terminate it immediately.
-4. Cross-check on `chrome://extensions`: the card's "service worker" state
-   flips to *Inactive*; the next event (click, alarm, push) re-spawns it and
-   a fresh "service worker" inspector link appears.
-
-## 3. Send a broadcast (Wave 0's actual target — preferred over plain notifications)
-
-Wave 0's correlation-token scheme is specifically about **broadcasts**
-(`POST /broadcasts` → `POST /broadcasts/:id/send`), so prefer this path to
-also validate that end-to-end, not just the SDK's click/dismiss durability.
+You need two push-api keys of the same tenant, and the push-api host. Keep all
+three in your shell, never in a file in this repo:
 
 ```sh
-# 1. Create (or reuse) an audience that includes this test subscriber.
-# NOTE: audience-membership mechanics (which subscribers match an audience)
-# aren't something I could confirm from the SDK repo alone -- confirm with
-# the lead/backend which audienceId already covers this subscriber, or how
-# to add it, before running this.
-curl -i https://api.pushto.ai/audiences \
-  -H "Authorization: Bearer <REAL_ADMIN_API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{ "name": "wave1-q5-smoke" }'
+export PUSH_API_URL=...            # push-api host, no /v1 and no trailing slash
+export PUSHTO_BROWSER_KEY=...      # a key with NO permissions: goes in the extension
+export PUSHTO_SENDING_KEY=...      # a key with the `sending` permission: curl only
+```
 
-# 2. Create the broadcast against that audienceId.
-curl -i https://api.pushto.ai/broadcasts \
-  -H "Authorization: Bearer <REAL_ADMIN_API_KEY>" \
+The sending key must never be put in `background.js`: everything in an
+extension is readable by whoever installs it.
+
+## 0. Build the SDK and point the harness at push-api
+
+```sh
+cd packages/chrome-extension
+PUSHTO_CORE_URL="$PUSH_API_URL" bunx tsup
+cp dist/index.js ../../tools/q5-smoke-extension/vendor/pushto-chrome-extension.js
+cp dist/index.js.map ../../tools/q5-smoke-extension/vendor/pushto-chrome-extension.js.map
+```
+
+Then edit `background.js` locally and replace the placeholder
+`'REPLACE_WITH_REAL_ADMIN_API_KEY'` with the **browser** key (the placeholder's
+name predates push-api; an admin key is no longer what goes here). Remove the
+`defaultNotificationIcon` line if you want to exercise `data.icon` (the default
+icon wins over it). **Do not commit that change.**
+
+## 1. Load the extension and register
+
+1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** →
+   select `tools/q5-smoke-extension/`.
+2. Click **service worker** on the extension's card to open its DevTools.
+3. Expect `[PT-Q5] registerPushSubscription OK` in the console and, in the
+   Network tab, in this order:
+   - `GET  $PUSH_API_URL/v1/vapid-key` → `200`
+   - `POST $PUSH_API_URL/v1/subscriptions` → `201` (`200` if this user already
+     had the subscription). Body: `external_id: "anon:<uuid>"`, the harness's
+     `email`, `subscription: { endpoint, expirationTime, keys }` and
+     `metadata.channel: "extension"`; no `user_hash`.
+
+   There must be **no** request to `/v1/users` or `/v1/users/<id>/endpoints`:
+   a browser key gets `403 insufficient_permissions` there.
+
+   This proves `pushManager.subscribe()` works in an MV3 background worker with
+   only the `notifications` / `alarms` / `storage` permissions, and that
+   push-api's CORS lets the worker call it with no `host_permissions`.
+4. Read the push-api user id, which the sends below need: it is the `user_id`
+   in the response of `POST /v1/subscriptions` (Network tab → Response).
+
+   ```sh
+   export PUSHTO_USER_ID=<that number>
+   ```
+5. **Re-registration is skipped.** Reload the extension (or stop the worker,
+   step 2, and wake it). `registerPushSubscription OK` is logged again and the
+   Network tab shows **no request at all**: the registration and the VAPID key
+   are both remembered for 24 hours.
+6. **It expires.** In the service worker console, age the stored registration,
+   then reload the extension: both requests of step 1.3 are sent again.
+
+   ```js
+   const { pt_registration } = await chrome.storage.local.get('pt_registration');
+   await chrome.storage.local.set({
+     pt_registration: { ...pt_registration, registeredAt: Date.now() - 25 * 3600e3 },
+   });
+   ```
+
+7. **Identity (optional).** In `background.js`, pass
+   `{ id: 'q5-user', email: ... }` to `registerPushSubscription` and reload:
+   one `POST /v1/subscriptions` with `external_id: "q5-user"` and a different
+   `user_id` in the response (use that one for the sends below). Add
+   the real `hash` for that id (computed with the tenant's identity secret,
+   on your machine, never in the extension) and reload again: the same
+   request with `user_hash`, still `2xx`. Change one digit of the hash and
+   reload: `403 invalid_user_hash`, exactly one request (no retry), logged by
+   the harness as a failed registration and sent again on the next reload
+   (nothing is cached). If the tenant has no identity secret yet, any hash
+   answers that `403`.
+   Remove the `User` argument and reload: the subscription moves back to the
+   `anon:<uuid>` user.
+
+## 2. Killing the service worker
+
+Every step that needs a genuinely fresh worker (no listeners left over from the
+one that showed the notification) uses this:
+
+1. Open `chrome://serviceworker-internals`.
+2. Find this extension's worker (`chrome-extension://<extension-id>/`; the id
+   is on its `chrome://extensions` card).
+3. Click **Stop**.
+4. Cross-check on `chrome://extensions`: the card's "service worker" flips to
+   *Inactive*; the next event (click, alarm, push) starts it again.
+
+## 3. Send a notification
+
+```sh
+curl -i "$PUSH_API_URL/v1/notifications" \
+  -H "Authorization: Bearer $PUSHTO_SENDING_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "title": "Wave 1 Q5 broadcast smoke",
+    "user_id": '"$PUSHTO_USER_ID"',
+    "title": "Q5 smoke",
     "body": "click me",
-    "link": "https://example.com/deep-link",
-    "audienceId": <AUDIENCE_ID>
+    "data": {
+      "url": "https://example.com/deep-link",
+      "badge": { "text": "1", "color": "#ff0000" }
+    }
   }'
-
-# 3. Send it (broadcastId from step 2's response).
-curl -i https://api.pushto.ai/broadcasts/<BROADCAST_ID>/send \
-  -H "Authorization: Bearer <REAL_ADMIN_API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{ "broadcastId": <BROADCAST_ID> }'
 ```
 
-If audience targeting is a blocker on the day, `POST /notifications` (below)
-is a valid fallback for exercising the click/dismiss durability paths — the
-SDK-side bug in step 5 is client-only and identical either way; it just
-won't additionally validate Wave 0's broadcast correlation-token resolution.
+Expect a `2xx` whose body lists the notification(s) created (one per active
+endpoint of the user). The id of each is the `notification_id` of its feedback
+events and the id of the Chrome notification.
+
+Variants used below — replace `data` with:
+
+```jsonc
+// auto-dismiss, under Chrome's 30 s alarm floor
+{ "url": "https://example.com/deep-link", "auto_dismiss": { "behavior": "timed", "dismiss_time_ms": 10000 } }
+// auto-dismiss, alarm only
+{ "url": "https://example.com/deep-link", "auto_dismiss": { "behavior": "timed", "dismiss_time_ms": 65000 } }
+// tag replacement: send twice
+{ "tag": "q5", "context_message": "replaces the previous one" }
+// unsafe click target: must open nothing
+{ "url": "javascript:alert(1)" }
+// icon from the payload (only if background.js sets no defaultNotificationIcon)
+{ "icon": "https://www.google.com/favicon.ico" }
+```
+
+To read back what was recorded (sending key only):
 
 ```sh
-curl -i https://api.pushto.ai/notifications \
-  -H "Authorization: Bearer <REAL_ADMIN_API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Wave 1 Q5 smoke",
-    "body": "click me while the worker is warm",
-    "link": "https://example.com/deep-link",
-    "badge": { "text": "1", "color": "#ff0000" },
-    "autoDismissOptions": { "behavior": "timed", "dismissTimeMS": 10000 }
-  }'
+curl -s "$PUSH_API_URL/v1/users/$PUSHTO_USER_ID/feedback" \
+  -H "Authorization: Bearer $PUSHTO_SENDING_KEY"
 ```
 
-## 4. Happy path — click while the worker is still warm (AC1, literal case)
+## 4. Happy path — click while the worker is warm
 
-1. Send per step 3 (broadcast, or the notification fallback).
-2. As soon as the notification appears, click it immediately (no SW kill).
-3. Expect: link opens in a new tab, toolbar badge clears, and either
-   `POST /notifications/track` or `POST /broadcasts/.../track` (whichever
-   send path you used) fires with `status: "clicked"` (check Network tab).
+1. Send per step 3.
+2. The notification appears and the toolbar badge shows `1`. Network tab:
+   `POST /v1/feedback` → `202 {"accepted":true}` with
+   `event_type: "delivered"` and a numeric `notification_id` (no `occurred_at`:
+   push-api stamps the time).
+3. Click the notification. Expect: the link opens in a new tab, the badge
+   clears, and two more `POST /v1/feedback`: `clicked`, then `opened`. **No**
+   `dismissed`.
 
-## 5. Real-device confirmation — click AFTER the worker is killed (W1-G fix verification)
+## 5. Click AFTER the worker is killed
 
-This is a real-device confirmation of a HIGH-severity regression found by
-the mocked-chrome unit tests (`src/lib/__tests__/mv3-durability.test.ts`):
-`chrome.notifications.onClicked` was only wired up lazily inside
-`showNotification()`/`fireDismissIfPresent()`, never at
-`ReceiveNotification.initialize()` — unlike `Dismiss`, whose listeners were
-already correctly registered at top-level SW startup. **This has since been
-fixed in-source** (`receive-notification.ts` now also calls
-`PushNotificationEvents.getInstance(apiKey)` at top-level init, alongside
-`Dismiss.instance.registerListeners(apiKey)`) and re-verified by the unit
-tests (8/8 green). This step confirms the fix holds under real Chrome MV3
-wake-event semantics, not just the mock.
+1. Send per step 3. Let it render, then kill the worker (step 2).
+2. Click the still-visible notification.
+3. Expected: the link opens, the badge clears, and `clicked` + `opened` appear
+   in the Network tab of the freshly started worker. The notification's state
+   came from `chrome.storage.local`, and the click reached a listener
+   registered at top-level startup.
+4. If this fails on real Chrome while the mocked tests are green, that is a
+   finding in its own right (mock/reality divergence in MV3 wake-event
+   dispatch): capture the exact repro and escalate.
 
-1. Send another notification/broadcast per step 3.
-2. Let it render, then immediately kill the SW per step 2
-   (`chrome://serviceworker-internals` → Stop).
-3. Click the still-visible notification.
-4. **Expected (fix verified):** link opens in a new tab, toolbar badge
-   clears, and a track POST with `status: "clicked"` appears in the Network
-   tab of the freshly-spun-up SW inspector — even though the SW had been
-   fully terminated between the notification rendering and the click.
-5. **If this fails on real Chrome despite the mocked tests being green**,
-   that's a real finding in its own right (mock/reality divergence in MV3
-   wake-event dispatch) — capture the exact repro and escalate immediately.
+## 6. Close by the user
 
-## 6. Auto-dismiss durability — `<30s` and `>=60s` buckets (AC2, 3.3b)
+1. Send per step 3 and close the notification with its ✕ (do not click it).
+2. Expected: one `POST /v1/feedback` with `event_type: "dismissed"`.
+3. Repeat with the worker killed before closing. Record whether Chrome wakes
+   the worker for `onClosed` and whether `dismissed` is sent — this path has
+   not been verified on a real device.
+4. **`byUser`.** The SDK sends `dismissed` only when `onClosed` reports
+   `byUser === true`. For each way of getting rid of a notification on this OS
+   (✕ on the banner, clearing it from the notification centre, "clear all",
+   letting the banner time out, Do Not Disturb), record whether `dismissed` is
+   sent. To see the raw value, add in the service worker console:
 
-**`<30s` (hybrid setTimeout path):**
-1. Send a notification/broadcast with a `10000`ms (`<30s`) timed
-   auto-dismiss.
-2. Immediately kill the SW per step 2.
-3. Because the delay is under Chrome's 30s alarm floor, the SDK also
-   schedules a `setTimeout` — but that timer dies with the terminated
-   worker. Confirm whether the notification still auto-dismisses via the
-   clamped 30s backstop alarm (it should, at ~30s, not ~10s — the
-   `setTimeout` precision is lost once the worker is killed, but the alarm
-   backstop should still fire the dismiss). Note the actual elapsed time
-   before dismissal.
+   ```js
+   chrome.notifications.onClosed.addListener((id, byUser) => console.log('[PT-Q5] onClosed', id, byUser));
+   ```
 
-**`>=60s` (pure alarm path):**
-1. Send a notification/broadcast with a `65000`ms (`>=60s`) timed
-   auto-dismiss.
-2. Immediately kill the SW per step 2.
-3. Wait ~65s. Confirm the notification auto-dismisses and a
-   `status: "auto-dismissed"` track event fires even though the SW was dead
-   in between — this is the literal AC2 scenario.
+   Run this on macOS and Windows: it decides whether `byUser` can be relied
+   on.
 
-## 7. Tenant isolation sanity
+## 7. Auto-dismiss durability
 
-Ask database-engineer (or query with a service-role connection) to confirm
-the `track_notifications`/`track_broadcasts` rows from steps 4–6 have the
-correct `customer_id` for the key used, and no cross-tenant rows appear.
+**`< 30 s` (hybrid `setTimeout` + alarm):**
+1. Send the `10000` ms variant and leave the worker alone: the notification
+   goes away at ~10 s.
+2. Send it again and kill the worker at once. The `setTimeout` dies with the
+   worker; the notification should go away at ~30 s through the clamped alarm.
+   Note the actual time.
+
+**`>= 60 s` (alarm only):**
+1. Send the `65000` ms variant and kill the worker at once.
+2. At ~65 s the notification goes away although the worker was dead.
+
+In all three cases **no** feedback is sent for the dismissal: the only event
+for the notification is `delivered`.
+
+## 8. Tag replacement, unsafe URL, icon
+
+- **Tag.** Send the `tag` variant twice. The first notification disappears
+  when the second arrives; each has a `delivered` and neither a `dismissed`.
+- **Unsafe URL.** Send the `javascript:` variant and click it: no tab opens,
+  `clicked` is sent, `opened` is not.
+- **Icon.** With no `defaultNotificationIcon` in `background.js`, send the
+  `icon` variant and record whether the notification shows that icon or falls
+  back to the built-in one: the harness has no `host_permissions` for the
+  icon's host, so Chrome loading it is not guaranteed. Either way the
+  notification must appear. Send one with no icon: the harness manifest
+  declares no `icons`, so the built-in transparent icon is used and the
+  notification must still appear.
+
+## 9. Tenant isolation sanity
+
+With the sending key of **another** tenant, `GET
+/v1/users/$PUSHTO_USER_ID/feedback` must answer `404`, and a `POST
+/v1/feedback` for one of the notification ids above must answer `404`.
 
 ## Reporting
 
-For each step capture: Chrome version (`chrome://version`), exact console
-log lines, Network tab status codes/bodies, and the SW state transitions in
-`chrome://serviceworker-internals` (RUNNING → STOPPED → RUNNING). File
-findings with this doc's step number as the repro.
+For each step capture: Chrome version (`chrome://version`), the console lines,
+the Network tab's status codes and request bodies, and the worker's state
+transitions in `chrome://serviceworker-internals` (RUNNING → STOPPED →
+RUNNING). File findings with this document's step number as the repro.

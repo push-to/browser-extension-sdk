@@ -1,5 +1,13 @@
-import { PushNotificationEvents } from './push-notification-events';
-import { PushNotificationData } from './types';
+import { fromStored } from './payload';
+import { NormalizedNotification } from './types';
+
+/**
+ * Ids come from push payloads, so one can be `__proto__` or `toString`: only
+ * an own property is an entry.
+ */
+function hasEntry(notifications: Record<string, unknown>, id: string) {
+  return Object.prototype.hasOwnProperty.call(notifications, id);
+}
 
 /**
  * Persistent store for in-flight notifications.
@@ -8,12 +16,19 @@ import { PushNotificationData } from './types';
  * instance is spun up to handle the next push/click. An in-memory `Map` does
  * not survive that, so notification metadata is persisted in
  * `chrome.storage.local` and read back on demand. Every method is async as a
- * result. Values are plain `PushNotificationData` objects, so the JSON
- * round-trip performed by `chrome.storage` is lossless.
+ * result. Values are plain objects, so the JSON round-trip performed by
+ * `chrome.storage` is lossless.
+ *
+ * Entries are read through `fromStored`: 0.0.x stored the raw legacy payload
+ * under the same key, and those entries must still resolve after an upgrade.
  */
 export class NotificationsState {
   private static notificationsState: NotificationsState;
   private static readonly STORAGE_KEY = 'pt_notifications';
+
+  // Each write is read-modify-write of one storage key; run them one at a
+  // time so two events handled by the same worker cannot lose an update.
+  private queue: Promise<unknown> = Promise.resolve();
 
   private constructor() {}
 
@@ -24,76 +39,92 @@ export class NotificationsState {
     return this.notificationsState;
   }
 
-  private async readAll(): Promise<Record<string, PushNotificationData>> {
+  private serialize<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(task, task);
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  private async readAll(): Promise<Record<string, unknown>> {
     const stored = await chrome.storage.local.get(
       NotificationsState.STORAGE_KEY,
     );
-    return (
-      (stored[NotificationsState.STORAGE_KEY] as
-        | Record<string, PushNotificationData>
-        | undefined) ?? {}
-    );
+    const value = stored[NotificationsState.STORAGE_KEY];
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   }
 
   private async writeAll(
-    notifications: Record<string, PushNotificationData>,
+    notifications: Record<string, unknown>,
   ): Promise<void> {
     await chrome.storage.local.set({
       [NotificationsState.STORAGE_KEY]: notifications,
     });
   }
 
-  public async addNotification(
+  public addNotification(
     notificationId: string,
-    notification: PushNotificationData,
+    notification: NormalizedNotification,
   ): Promise<void> {
-    const notifications = await this.readAll();
-    notifications[notificationId] = notification;
-    await this.writeAll(notifications);
-  }
-
-  public async removeNotification(notificationId: string): Promise<void> {
-    const notifications = await this.readAll();
-    if (notificationId in notifications) {
-      delete notifications[notificationId];
+    return this.serialize(async () => {
+      const notifications = await this.readAll();
+      // Not an assignment: `notifications['__proto__'] = …` would set the
+      // object's prototype and store nothing.
+      Object.defineProperty(notifications, notificationId, {
+        value: notification,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
       await this.writeAll(notifications);
-    }
+    });
   }
 
-  public async getNotifications(): Promise<
-    Record<string, PushNotificationData>
-  > {
-    return this.readAll();
-  }
-
-  public async getNotification(
-    notificationId: string,
-  ): Promise<PushNotificationData | undefined> {
-    const notifications = await this.readAll();
-    return notifications[notificationId];
-  }
-
-  public async removeNotificationsByTag(
-    apiKey: string,
-    tag: string,
-  ): Promise<void> {
-    const notifications = await this.readAll();
-    let changed = false;
-
-    for (const [notificationId, notification] of Object.entries(
-      notifications,
-    )) {
-      if (notification.options.data.tag === tag) {
+  public removeNotification(notificationId: string): Promise<void> {
+    return this.serialize(async () => {
+      const notifications = await this.readAll();
+      if (hasEntry(notifications, notificationId)) {
         delete notifications[notificationId];
-        changed = true;
-        PushNotificationEvents.getInstance(apiKey).handleAutoDismissed(
-          notificationId,
-        );
+        await this.writeAll(notifications);
       }
-    }
+    });
+  }
 
-    if (changed) {
-      await this.writeAll(notifications);
-    }
+  public getNotification(
+    notificationId: string,
+  ): Promise<NormalizedNotification | undefined> {
+    return this.serialize(async () => {
+      const notifications = await this.readAll();
+      return hasEntry(notifications, notificationId)
+        ? fromStored(notifications[notificationId])
+        : undefined;
+    });
+  }
+
+  /**
+   * Removes every entry with this tag except `exceptId`, and returns the ids
+   * removed so the caller can clear them from the screen.
+   */
+  public removeNotificationsByTag(
+    tag: string,
+    exceptId?: string,
+  ): Promise<string[]> {
+    return this.serialize(async () => {
+      const notifications = await this.readAll();
+      const removed: string[] = [];
+
+      for (const [notificationId, stored] of Object.entries(notifications)) {
+        if (notificationId !== exceptId && fromStored(stored)?.tag === tag) {
+          delete notifications[notificationId];
+          removed.push(notificationId);
+        }
+      }
+
+      if (removed.length > 0) {
+        await this.writeAll(notifications);
+      }
+      return removed;
+    });
   }
 }
