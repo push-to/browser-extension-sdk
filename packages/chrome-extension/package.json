@@ -1,6 +1,6 @@
 {
   "name": "@push-to/chrome-extension",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/push-to/browser-extension-sdk.git",

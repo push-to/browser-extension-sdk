@@ -1,3 +1,14 @@
+## [1.1.0](https://github.com/push-to/browser-extension-sdk/compare/v1.0.0...v1.1.0) (2026-11-26)
+
+### Features
+
+* make the SDK safe to ship to an extension that already has users ([ec3b174](https://github.com/push-to/browser-extension-sdk/commit/ec3b1748442005cf92612eb3a778d54fa67b86dc))
+
+### Bug Fixes
+
+* **review:** address PR [#7](https://github.com/push-to/browser-extension-sdk/issues/7) review — close the remaining ways a previous user's push could reach the screen ([e309176](https://github.com/push-to/browser-extension-sdk/commit/e309176217cc89b53068c3440bd6bfe597e76f18))
+* **review:** address PR [#7](https://github.com/push-to/browser-extension-sdk/issues/7) second review pass — refuse numeric user ids JavaScript has already rounded ([ee3f023](https://github.com/push-to/browser-extension-sdk/commit/ee3f0238162dbdceb4ff07d8bb5a164802cc488e))
+
 ## [1.0.0](https://github.com/push-to/browser-extension-sdk/compare/v0.0.17...v1.0.0) (2026-11-26)
 
 ### ⚠ BREAKING CHANGES
